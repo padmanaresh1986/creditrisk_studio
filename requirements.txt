@@ -1,0 +1,14 @@
+--index-url https://pypi.org/simple
+
+streamlit==1.64.0
+pandas==2.3.3
+numpy==2.3.4
+scipy==1.16.2
+scikit-learn==1.7.2
+xgboost==3.4.1
+shap==0.52.0
+plotly==6.8.0
+openpyxl==3.1.5
+xlrd==2.0.2
+joblib==1.5.2
+pytest>=8,<9
