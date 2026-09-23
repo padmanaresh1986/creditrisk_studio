@@ -18,7 +18,7 @@ class ModelRecord:
     version: str
     project_id: str = ""
     project_name: str = ""
-    status: str = "Candidate"  # Candidate | Published | Default | Archived
+    status: str = "Trained"  # Trained | Published | Default | Archived
     cv_metrics: dict[str, float] = field(default_factory=dict)
     final_metrics: dict[str, float] = field(default_factory=dict)
     threshold: float = 0.50
@@ -35,6 +35,10 @@ class ModelRecord:
     @property
     def is_published(self) -> bool:
         return self.status in {"Published", "Default"}
+
+    @property
+    def is_trained(self) -> bool:
+        return self.status in {"Trained", "Published", "Default"} or bool(self.final_metrics)
 
 
 class AppStore:
@@ -66,6 +70,10 @@ class AppStore:
                             if value and not Path(str(value)).is_absolute():
                                 row[path_key] = str((project_root / str(value)).resolve())
                         rec = ModelRecord(**row)
+                        if rec.status == "Candidate" and (rec.final_metrics or rec.artifact_path):
+                            rec.status = "Trained"
+                        if rec.status == "Candidate" and (rec.final_metrics or rec.artifact_path):
+                            rec.status = "Trained"
                     except TypeError:
                         continue
                     self.models[rec.version] = rec
@@ -183,42 +191,22 @@ class AppStore:
             self.manager.save_model_index(project_id, [])
 
     def publish_models(self, versions: list[str], recommended_version: str) -> None:
-        with self._lock:
-            if not versions:
-                raise ValueError("At least one model must be published.")
-            recs = [self.models.get(v) for v in versions]
-            if any(r is None for r in recs):
-                missing = [v for v, r in zip(versions, recs) if r is None]
-                raise ValueError("Model versions not found: " + ", ".join(missing))
-            project_ids = {r.project_id for r in recs if r is not None}
-            if len(project_ids) != 1:
-                raise ValueError("All models being published must belong to the same project.")
-            project_id = next(iter(project_ids))
-            if recommended_version not in versions:
-                raise ValueError("Recommended model must be one of the published models.")
-            for rec in self.models.values():
-                if rec.project_id == project_id and rec.status in {"Published", "Default"}:
-                    rec.status = "Candidate"
-            for version in versions:
-                self.models[version].status = "Published"
-            self.models[recommended_version].status = "Default"
-            self.recommended_version = recommended_version
-            self.active_project_id = project_id
-            self.current_project_id = project_id
-            self._persist_project_models(project_id)
-            project = self.manager.get_project(project_id)
-            if project:
-                self.manager.update_project(project_id, recommended_version=recommended_version, status="Trained")
-                self.manager.activate_project(project_id, recommended_version)
-            self.active_project_id = project_id
+        """Backward-compatible wrapper that publishes exactly one final model."""
+        if len(versions) != 1 or versions[0] != recommended_version:
+            raise ValueError("Exactly one model must be designated as the final prediction model.")
+        self.set_user_project(self.models[recommended_version].project_id, recommended_version)
 
     def user_models(self) -> list[ModelRecord]:
+        """Return exactly one administrator-selected final model for the active project."""
         active_id = self.active_project_id
-        if not active_id:
+        version = self.recommended_version
+        if not active_id or not version:
             return []
         with self._lock:
-            rows = [r for r in self.models.values() if r.project_id == active_id and r.is_published]
-            return sorted(rows, key=lambda r: (r.version != self.recommended_version, -float(r.cv_metrics.get("PR-AUC", -1.0))))
+            rec = self.models.get(version)
+            if rec and rec.project_id == active_id and rec.status == "Default":
+                return [rec]
+        return []
 
     def current_project_models(self) -> list[ModelRecord]:
         pid = self.current_project_id
@@ -238,6 +226,7 @@ class AppStore:
         return sorted(latest.values(), key=lambda r: r.model_name)
 
     def set_user_project(self, project_id: str, recommended_version: str | None = None) -> None:
+        """Expose exactly one final model from one project to end users."""
         with self._lock:
             project = self.manager.get_project(project_id)
             if project is None:
@@ -249,14 +238,16 @@ class AppStore:
             if recommended_version is None:
                 recommended_version = max(eligible, key=lambda r: float(r.cv_metrics.get("PR-AUC", -1.0))).version
             if recommended_version not in allowed:
-                raise ValueError("Recommended model must be one of the latest evaluated models in this project.")
-            # Only the latest evaluated version for each model family is User-visible.
+                raise ValueError("Final prediction model must be one of the latest evaluated models in this project.")
+            previous_active = self.active_project_id
+            if previous_active and previous_active != project_id:
+                for rec in self.models.values():
+                    if rec.project_id == previous_active and rec.status in {"Published", "Default"}:
+                        rec.status = "Trained"
+                self._persist_project_models(previous_active)
             for rec in self.models.values():
                 if rec.project_id == project_id:
-                    rec.status = "Candidate"
-            versions = [r.version for r in eligible]
-            for version in versions:
-                self.models[version].status = "Published"
+                    rec.status = "Trained"
             self.models[recommended_version].status = "Default"
             self.recommended_version = recommended_version
             self.active_project_id = project_id
@@ -266,6 +257,8 @@ class AppStore:
             self.manager.activate_project(project_id, recommended_version)
             self.refresh()
             self.current_project_id = project_id
+            self.recommended_version = recommended_version
+            self.active_project_id = project_id
 
     def record_run(self, dataset_name: str, summary: dict[str, Any], status: str = "Completed", project_id: str | None = None, logs: list[str] | None = None) -> str:
         with self._lock:

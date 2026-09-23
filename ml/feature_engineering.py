@@ -28,7 +28,7 @@ def clean_raw_dataframe(df: pd.DataFrame, drop_constant: bool = True) -> pd.Data
 
     # Numeric fields stored as strings in the source.
     numeric_to_convert = list(NUMERIC_AS_TEXT_FEATURES)
-    numeric_to_convert += ["Credit_Amount", "Score_Source_3"]
+    numeric_to_convert += ["Credit_Amount", "Score_Source_3", "Application_Process_Hour"]
 
     for col in numeric_to_convert:
         if col in out.columns:

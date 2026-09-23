@@ -8,6 +8,7 @@ import streamlit as st
 
 from components.ui import empty_state, risk_meter, section_header
 from core.ml_runtime import available_user_models, build_excel_export, load_model, load_model_context, score_raw_dataframe
+from core.logging_utils import emit_exception, emit_log, render_console
 from core.state import get_store
 from ml.feature_engineering import raw_required_columns
 
@@ -17,18 +18,15 @@ project_text = f"Active project: {active_project.name}. " if active_project else
 section_header("PREDICTION CENTER", "Bulk Prediction", project_text + "Score a CSV or Excel application file, inspect individual records, and download the scored workbook.")
 models = available_user_models()
 if not models:
-    empty_state("Bulk scoring is not available yet", "No model has been released. Complete the training lifecycle and publish the candidates first.", "Training Studio → Model Release & User Access")
+    empty_state("Bulk scoring is not available yet", "No final prediction model has been released for the active project. Complete training and have an administrator set one final model.", "Training Studio → Model Release & User Access")
     st.stop()
 
-models = sorted(models, key=lambda r: (r.version != store.recommended_version, -float(r.cv_metrics.get("PR-AUC", -1))))
-names = [r.model_name for r in models]
-choice = st.radio("Model for this batch", names, index=0, horizontal=True, label_visibility="collapsed")
-selected = next(r for r in models if r.model_name == choice)
-
+selected = models[0]
 with st.container(border=True):
-    st.caption("DEFAULT" if selected.status == "Default" else "PUBLISHED")
+    st.caption("ADMINISTRATOR-SELECTED FINAL MODEL")
     st.markdown(f"### {selected.model_name}")
-    st.caption(f"{selected.family} · validation PR-AUC {selected.cv_metrics.get('PR-AUC', float('nan')):.4f} · threshold {selected.threshold:.1%}")
+    st.caption(f"{selected.family} · holdout PR-AUC {selected.final_metrics.get('PR-AUC', float('nan')):.4f} · threshold {selected.threshold:.1%}")
+    st.info("Users do not select a model. Bulk scoring uses the administrator-selected final model for the active project.")
 
 uploaded = st.file_uploader("Upload applicant file", type=["csv", "xlsx", "xls"], disabled=st.session_state.busy)
 if uploaded is None:
@@ -69,22 +67,34 @@ st.markdown("### Preview")
 st.dataframe(raw.head(12), width="stretch", hide_index=True)
 
 if st.button("Run bulk scoring", type="primary", width="stretch", icon=":material/play_arrow:", disabled=st.session_state.busy):
+    st.session_state.bulk_logs = []
     st.session_state.busy = True
+    emit_log(
+        f"Bulk scoring started | file={uploaded.name!r} | rows={len(raw):,} | model={selected.model_name!r} | version={selected.version}",
+        "INFO",
+        "bulk",
+    )
     try:
         with st.status(f"Scoring {len(raw):,} rows with {selected.model_name}…", expanded=True) as status:
             status.write("Validating the applicant schema.")
+            emit_log(f"Schema validated | columns={len(raw.columns)}", "DEBUG", "bulk")
             status.write("Applying feature engineering and the trained preprocessing pipeline.")
             scored, _ = score_raw_dataframe(raw, selected.version)
+            emit_log(f"Scoring pipeline complete | output_shape={scored.shape}", "DEBUG", "bulk")
             status.write("Calculating probabilities and thresholded classifications.")
             st.session_state.bulk_scored = scored
             st.session_state.bulk_model_version = selected.version
             st.session_state.bulk_source_name = uploaded.name
+            emit_log("Bulk scoring complete", "INFO", "bulk")
             status.update(label="Bulk scoring complete", state="complete")
         st.rerun()
     except Exception as exc:
-        st.error(f"Scoring failed: {exc}")
+        emit_exception(exc, channel="bulk", context="Bulk scoring failed")
+        st.error(f"Scoring failed: {type(exc).__name__}: {exc}")
     finally:
         st.session_state.busy = False
+
+render_console("bulk", expanded=False)
 
 scored = st.session_state.get("bulk_scored")
 if scored is None or st.session_state.get("bulk_model_version") != selected.version:
@@ -110,8 +120,10 @@ if selected_rows:
     left, right = st.columns([1.05, 1])
     with left:
         st.markdown(f"### Record #{row_num}")
-        detail = row.reset_index()
-        detail.columns = ["Field", "Value"]
+        detail = pd.DataFrame({
+            "Field": [str(v) for v in row.index],
+            "Value": ["" if pd.isna(v) else str(v) for v in row.to_list()],
+        })
         st.dataframe(detail, width="stretch", height=420, hide_index=True)
     with right:
         st.markdown("### Risk detail")

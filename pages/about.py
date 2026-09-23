@@ -4,7 +4,7 @@ from components.ui import section_header
 section_header("INFORMATION","About CreditRisk Studio","A Streamlit-only automobile loan default analytics application built for an academic machine-learning capstone.")
 with st.container(border=True):
     st.markdown("### Product workflow")
-    st.write("Upload labelled training data → understand and validate the data → engineer features → train candidate models → validate and tune → choose operating thresholds → evaluate on a holdout partition → inspect explainability → release models for prediction.")
+    st.write("Upload labelled training data → understand and validate the data → engineer features → select model families → train selected models → validate and tune → choose operating thresholds → evaluate on a holdout partition → inspect explainability → set one final prediction model.")
 with st.container(border=True):
     st.markdown("### Prediction experience")
     st.write("Users can select any model released by the administrator. The recommended model is highlighted and preselected, while the other released candidates remain available for comparison.")

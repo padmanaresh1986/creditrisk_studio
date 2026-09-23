@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from core.logging_utils import emit_log
+
 from components.ui import (
     inject_global_css,
     inject_login_css,
@@ -21,6 +23,9 @@ st.set_page_config(
 inject_global_css()
 init_app_state()
 store = get_store()
+if not st.session_state.get("app_log_initialized"):
+    emit_log("Application session initialized", "DEBUG", "app")
+    st.session_state.app_log_initialized = True
 
 
 def login_screen() -> None:

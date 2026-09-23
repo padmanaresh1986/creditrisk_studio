@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
 ENGINEERED_DEFINITIONS = {
     "Loan_to_Income_Ratio": "Loan amount relative to annual client income.",
     "Annuity_to_Income_Ratio": "Loan annuity relative to annual client income.",
@@ -25,6 +26,36 @@ ENGINEERED_DEFINITIONS = {
     "Loan_Annuity_Log": "Log-transformed version of the loan annuity.",
 }
 
+# For user-facing explanations, aggregate derived model features back to the
+# raw application fields. When a derived feature depends on multiple inputs,
+# its SHAP contribution is split evenly across those source inputs. This is a
+# presentation aid, not a causal attribution.
+DERIVED_TO_RAW = {
+    "Loan_to_Income_Ratio": ["Credit_Amount", "Client_Income"],
+    "Annuity_to_Income_Ratio": ["Loan_Annuity", "Client_Income"],
+    "Credit_per_Family_Member": ["Credit_Amount", "Client_Family_Members"],
+    "Children_to_Family_Ratio": ["Child_Count", "Client_Family_Members"],
+    "Age_Years": ["Age_Days"],
+    "Employment_Years": ["Employed_Days"],
+    "Registration_Years": ["Registration_Days"],
+    "ID_Change_Years": ["ID_Days"],
+    "Average_Credit_Score": ["Score_Source_1", "Score_Source_2", "Score_Source_3"],
+    "Min_Credit_Score": ["Score_Source_1", "Score_Source_2", "Score_Source_3"],
+    "Max_Credit_Score": ["Score_Source_1", "Score_Source_2", "Score_Source_3"],
+    "Credit_Score_Range": ["Score_Source_1", "Score_Source_2", "Score_Source_3"],
+    "Available_Credit_Scores": ["Score_Source_1", "Score_Source_2", "Score_Source_3"],
+    "Score_Source_1_Missing": ["Score_Source_1"],
+    "Score_Source_3_Missing": ["Score_Source_3"],
+    "Client_Occupation_Missing": ["Client_Occupation"],
+    "Credit_Bureau_Missing": ["Credit_Bureau"],
+    "Social_Circle_Default_Missing": ["Social_Circle_Default"],
+    "Application_Hour_Sin": ["Application_Process_Hour"],
+    "Application_Hour_Cos": ["Application_Process_Hour"],
+    "Client_Income_Log": ["Client_Income"],
+    "Credit_Amount_Log": ["Credit_Amount"],
+    "Loan_Annuity_Log": ["Loan_Annuity"],
+}
+
 
 def _one_class_shap_values(values: Any) -> np.ndarray:
     arr = np.asarray(values)
@@ -35,6 +66,7 @@ def _one_class_shap_values(values: Any) -> np.ndarray:
 
 def local_shap_values(pipeline, X_raw: pd.DataFrame):
     import shap
+
     preprocessor = pipeline.named_steps["preprocessing"]
     estimator = pipeline.named_steps["model"]
     transformed = preprocessor.transform(X_raw)
@@ -97,6 +129,80 @@ def clean_display_feature(feature: str) -> str:
     return feature.replace("numeric__", "").replace("categorical__", "")
 
 
+def _raw_feature_for_encoded(name: str, raw_columns: list[str]) -> list[str]:
+    cleaned = clean_display_feature(str(name))
+    if cleaned in raw_columns:
+        return [cleaned]
+    # Match the longest raw column name as a prefix, which handles one-hot
+    # encoded names such as Client_Marital_Status_M.
+    matches = [c for c in raw_columns if cleaned.startswith(c + "_")]
+    if matches:
+        return [max(matches, key=len)]
+    return []
+
+
+def raw_dependencies(feature: str, raw_columns: list[str]) -> list[str]:
+    cleaned = clean_display_feature(str(feature))
+    if cleaned in DERIVED_TO_RAW:
+        return [c for c in DERIVED_TO_RAW[cleaned] if c in raw_columns]
+    if cleaned.endswith("_Missing"):
+        raw = cleaned[:-8]
+        if raw in raw_columns:
+            return [raw]
+    return _raw_feature_for_encoded(cleaned, raw_columns)
+
+
+def aggregate_input_contributions(
+    shap_df: pd.DataFrame,
+    raw_values: pd.DataFrame,
+    dictionary: dict[str, str] | None = None,
+    supplied_fields: list[str] | set[str] | None = None,
+) -> pd.DataFrame:
+    """Aggregate encoded/engineered SHAP evidence back to raw user inputs.
+
+    A derived feature that uses multiple raw inputs splits its signed SHAP
+    contribution equally between those inputs. This keeps the chart legible
+    while explicitly avoiding causal language.
+    """
+    # Backward compatibility for older positional callers that accidentally
+    # supplied (dictionary, supplied_fields) in the opposite order.
+    if not isinstance(dictionary, dict) and isinstance(supplied_fields, dict):
+        dictionary, supplied_fields = supplied_fields, dictionary
+
+    if raw_values is None or raw_values.empty:
+        return pd.DataFrame(columns=["Raw_Feature", "SHAP_Value", "Abs_SHAP", "Definition", "Value", "Direction"])
+
+    raw_columns = list(raw_values.columns)
+    supplied = set(supplied_fields or raw_columns)
+    contributions: dict[str, float] = {c: 0.0 for c in supplied if c in raw_columns}
+
+    for _, row in shap_df.iterrows():
+        deps = raw_dependencies(str(row["Feature"]), raw_columns)
+        deps = [d for d in deps if d in contributions]
+        if not deps:
+            continue
+        share = float(row["SHAP_Value"]) / len(deps)
+        for dep in deps:
+            contributions[dep] += share
+
+    dictionary = dictionary or {}
+    rows: list[dict[str, Any]] = []
+    for raw_name, impact in contributions.items():
+        if abs(impact) < 1e-12:
+            continue
+        value = raw_values.iloc[0][raw_name]
+        rows.append({
+            "Raw_Feature": raw_name,
+            "SHAP_Value": float(impact),
+            "Abs_SHAP": abs(float(impact)),
+            "Definition": feature_definition(raw_name, dictionary),
+            "Value": value,
+            "Direction": "Moves toward default" if impact > 0 else "Moves away from default",
+        })
+
+    return pd.DataFrame(rows).sort_values("Abs_SHAP", ascending=False).reset_index(drop=True)
+
+
 def feature_definition(feature: str, dictionary: dict[str, str] | None = None) -> str:
     name = clean_display_feature(feature)
     if name in ENGINEERED_DEFINITIONS:
@@ -133,11 +239,10 @@ def explain_local(shap_df: pd.DataFrame, dictionary: dict[str, str], top_n: int 
 
 
 def risk_band(probability: float) -> tuple[str, float]:
-    """Return a stable six-band probability label and percent position."""
+    """Return a stable three-band probability label and percent position."""
     p = float(np.clip(probability, 0.0, 1.0))
-    labels = ["Very Low", "Low", "Moderate", "Moderately High", "High", "Very High"]
-    bounds = [0.02, 0.05, 0.10, 0.20, 0.35]
-    for idx, boundary in enumerate(bounds):
-        if p < boundary:
-            return labels[idx], p * 100.0
-    return labels[-1], p * 100.0
+    if p < 0.10:
+        return "Low", p * 100.0
+    if p < 0.20:
+        return "Medium", p * 100.0
+    return "High", p * 100.0

@@ -85,7 +85,7 @@ def _save_context(path: Path, context: dict[str, Any]) -> str:
     return str(out)
 
 
-def train_candidates(df: pd.DataFrame, dictionary: dict[str, str], log=None, progress=None, artifact_root=None, project_id: str = "", project_name: str = "", project_root=None):
+def train_candidates(df: pd.DataFrame, dictionary: dict[str, str], log=None, progress=None, artifact_root=None, project_id: str = "", project_name: str = "", project_root=None, model_names: list[str] | None = None):
     log = log or (lambda _msg: None)
     progress = progress or (lambda _value, _text: None)
     X_train, X_test, y_train, y_test, audit = split_training_data(df)
@@ -95,12 +95,16 @@ def train_candidates(df: pd.DataFrame, dictionary: dict[str, str], log=None, pro
     candidates_dir = artifact_root / "candidates"
     candidates_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {}
-    names = list(MODEL_SPECS)
+    names = list(model_names) if model_names is not None else list(MODEL_SPECS)
+    names = [name for name in names if name in MODEL_SPECS]
+    if not names:
+        raise ValueError("Select at least one supported model to train.")
+    total_models = len(names)
     log(f"Prepared {X_train.shape[1]} model features from {len(df):,} labelled rows.")
     log(f"Training partition: {len(X_train):,} rows; holdout partition: {len(X_test):,} rows.")
     log(f"Holdout target rate is {y_test.mean():.2%}. The holdout will not be used for tuning or threshold selection.")
     for i, name in enumerate(names, 1):
-        progress((i-1)/len(names), f"Training {name}")
+        progress((i-1)/total_models, f"Training {name}")
         log(f"Training {name} ({i}/{len(names)})…")
         pipeline, numeric, categorical = build_model_pipeline(name, X_train, y_train)
         started = datetime.now(timezone.utc)
@@ -128,7 +132,7 @@ def train_candidates(df: pd.DataFrame, dictionary: dict[str, str], log=None, pro
             "feature_count": int(X_train.shape[1]), "transformed_feature_count": int(transformed_count),
             "trained_at_utc": started.isoformat(), "base_default_rate": float(y_train.mean()),
         }
-        progress(i/len(names), f"Completed {name}")
+        progress(i/total_models, f"Completed {name}")
         log(f"Completed {name}; artifact saved.")
     return {"models": results, "X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test, "audit": audit, "dataset_fingerprint": fp, "dictionary": dictionary, "project_id": project_id, "project_name": project_name, "project_root": str(project_root) if project_root else "", "artifact_root": str(artifact_root)}
 
@@ -139,10 +143,12 @@ def tune_candidates(training_bundle: dict, n_splits: int = 3, log=None, progress
     X_train, y_train = training_bundle["X_train"], training_bundle["y_train"]
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
     tuned = {}
-    for i, (name, info) in enumerate(training_bundle["models"].items(), 1):
+    model_items = list(training_bundle["models"].items())
+    total_models = max(len(model_items), 1)
+    for i, (name, info) in enumerate(model_items, 1):
         spec = MODEL_SPECS[name]
         log(f"Tuning {name} with {n_splits}-fold CV and a compact search space…")
-        progress((i-1)/3, f"Tuning {name}")
+        progress((i-1)/total_models, f"Tuning {name}")
         search = GridSearchCV(
             estimator=clone(info["pipeline"]), param_grid=spec.tuning_grid,
             scoring="average_precision", cv=cv, n_jobs=1, refit=True, return_train_score=False,
@@ -162,7 +168,7 @@ def tune_candidates(training_bundle: dict, n_splits: int = 3, log=None, progress
         context["tuned"] = True
         Path(info["context_path"]).write_text(json.dumps(context, indent=2, default=str), encoding="utf-8")
         tuned[name] = info
-        progress(i/3, f"Tuning complete: {name}")
+        progress(i/total_models, f"Tuning complete: {name}")
         log(f"Best {name} search PR-AUC: {search.best_score_:.4f}; params={search.best_params_}.")
     training_bundle["models"] = tuned
     training_bundle["tuned"] = True
@@ -217,7 +223,9 @@ def class_imbalance_comparison(training_bundle: dict, n_splits: int = 5, log=Non
     X_train, y_train = training_bundle["X_train"], training_bundle["y_train"]
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=RANDOM_STATE)
     out=[]
-    for i,(name,info) in enumerate(training_bundle["models"].items(),1):
+    model_items = list(training_bundle["models"].items())
+    total_models = max(len(model_items), 1)
+    for i,(name,info) in enumerate(model_items,1):
         balanced=clone(info["pipeline"]); standard=clone(info["pipeline"])
         est=standard.named_steps["model"]
         if hasattr(est,"class_weight"): est.set_params(class_weight=None)
@@ -226,7 +234,7 @@ def class_imbalance_comparison(training_bundle: dict, n_splits: int = 5, log=Non
             from sklearn.model_selection import cross_validate
             scores=cross_validate(pipe,X_train,y_train,cv=cv,scoring={"pr":"average_precision","rec":"recall"},n_jobs=1)
             out.append({"Model":name,"Strategy":strategy,"CV PR-AUC":float(scores["test_pr"].mean()),"CV Recall @ 0.50":float(scores["test_rec"].mean())})
-        progress(i/3,f"Imbalance comparison • {name}")
+        progress(i/total_models,f"Imbalance comparison • {name}")
         log(f"Imbalance comparison complete for {name}.")
     out_df = pd.DataFrame(out)
     project_root = Path(training_bundle.get("project_root")) if training_bundle.get("project_root") else None
@@ -258,7 +266,9 @@ def final_evaluate_all(training_bundle: dict, threshold_bundle: dict, log=None, 
     final_dir.mkdir(parents=True,exist_ok=True)
     outputs={}
     thresholds=threshold_bundle["best_thresholds"].set_index("Model")
-    for i,(name,info) in enumerate(training_bundle["models"].items(),1):
+    model_items = list(training_bundle["models"].items())
+    total_models = max(len(model_items), 1)
+    for i,(name,info) in enumerate(model_items,1):
         threshold=float(thresholds.loc[name,"Threshold"])
         log(f"Fitting {name} on the complete training partition…")
         model=clone(info["pipeline"])
@@ -285,7 +295,7 @@ def final_evaluate_all(training_bundle: dict, threshold_bundle: dict, log=None, 
             "project_id":training_bundle.get("project_id", ""),"project_name":training_bundle.get("project_name", ""),
         }
         info.update({"pipeline":model,"artifact_path":str(model_path),"context_path":context_path,"version":version,"selected_threshold":threshold,"final_metrics":outputs[name]})
-        progress(i/3,f"Holdout evaluation • {name}")
+        progress(i/total_models,f"Holdout evaluation • {name}")
         log(f"{name}: holdout PR-AUC={outputs[name]['final_pr_auc']:.4f}; ROC-AUC={outputs[name]['final_roc_auc']:.4f}; Recall={outputs[name]['final_recall']:.1%}; F1={outputs[name]['final_f1']:.4f}.")
     final_rows = []
     for name, out in outputs.items():
@@ -300,8 +310,9 @@ def run_full_lifecycle(df: pd.DataFrame, dictionary: dict[str,str], config: dict
     log=log or (lambda _msg: None); progress=progress or (lambda _v,_t:None)
     include_tuning=bool(config.get("include_tuning", False))
     # Progress budget: training 15%, tuning 20%, CV 25%, imbalance 10%, threshold 5%, holdout 25%.
-    bundle=train_candidates(df,dictionary,log,lambda p,t:progress(0.15*p,t))
-    progress(0.15,"All three candidate models trained")
+    selected_models = config.get("model_names") or list(MODEL_SPECS)
+    bundle=train_candidates(df,dictionary,log,lambda p,t:progress(0.15*p,t), model_names=selected_models)
+    progress(0.15,f"{len(selected_models)} selected model(s) trained")
     if include_tuning:
         bundle=tune_candidates(bundle,n_splits=int(config.get("tuning_folds",3)),log=log,progress=lambda p,t:progress(0.15+0.20*p,t))
     else:

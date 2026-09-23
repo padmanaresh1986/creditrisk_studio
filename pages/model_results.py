@@ -9,14 +9,14 @@ from components.ui import empty_state, section_header
 from core.state import get_store
 
 store = get_store()
-section_header("ADMIN WORKSPACE", "Model Results", "Review live validation and holdout evidence produced by the current training run.")
+section_header("ADMIN WORKSPACE", "Model Results", "Review holdout evidence for the administrator-selected final prediction model.")
 if not store.has_models:
     empty_state("No model results yet", "Results will appear after candidate training and validation have been completed.", "Training Studio → run the workflow")
     st.stop()
 
 records = [r for r in store.models.values() if r.is_published]
 if not records:
-    empty_state("No published model results yet", "Model Results is populated only after the administrator completes final evaluation and publishes the model set.", "Training Studio → complete Model Release & User Access")
+    empty_state("No final model results yet", "Model Results is populated only after the administrator completes final evaluation and sets the final prediction model.", "Training Studio → complete Model Release & User Access")
     st.stop()
 
 portfolio = pd.DataFrame([

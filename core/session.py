@@ -23,6 +23,9 @@ def init_app_state() -> None:
         "xai_bundle": {},
         "analysis_cache": None,
         "training_logs": [],
+        "prediction_logs": [],
+        "bulk_logs": [],
+        "app_logs": [],
         "busy": False,
         "busy_label": "",
         "navigation_notice": None,
@@ -37,6 +40,8 @@ def init_app_state() -> None:
         "phase7_complete": False,
         "eda_cache_ready": False,
         "project_selection": None,
+        "selected_model_names": ["Random Forest", "XGBoost", "L1 Logistic Regression"],
+        "final_model_name": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -56,6 +61,10 @@ def clear_training_state(keep_dataset: bool = True) -> None:
     for key in ["phase4_complete", "phase5_complete", "phase6_complete", "phase7_complete", "eda_cache_ready"]:
         st.session_state[key] = False
     st.session_state.training_logs = []
+    st.session_state.prediction_logs = []
+    st.session_state.bulk_logs = []
+    st.session_state.selected_model_names = ["Random Forest", "XGBoost", "L1 Logistic Regression"]
+    st.session_state.final_model_name = None
     if not keep_dataset:
         for key in ["training_df", "dictionary_df"]:
             st.session_state[key] = None

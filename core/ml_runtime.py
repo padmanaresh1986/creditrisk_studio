@@ -21,6 +21,7 @@ except ImportError:  # pragma: no cover
 
 from ml.feature_engineering import clean_raw_dataframe, engineer_features, raw_required_columns
 from ml.explainability import local_shap_values
+from ml.schema import CATEGORICAL_FEATURES_FINAL
 
 
 @st.cache_resource(show_spinner=False)
@@ -65,35 +66,158 @@ def dictionary_map(version: str) -> dict[str, str]:
     return dict(ctx.get("dictionary", {}))
 
 
+
+@st.cache_data(show_spinner=False)
+def _load_training_profile(project_root: str, dataset_filename: str) -> dict[str, Any]:
+    """Load lightweight input metadata from the dataset saved with a project."""
+    path = Path(project_root) / "data" / dataset_filename
+    if not path.exists():
+        return {"columns": {}, "source": "model-context-defaults"}
+    df = pd.read_csv(path, low_memory=False)
+    profile: dict[str, Any] = {"columns": {}, "source": str(path)}
+    for col in raw_required_columns():
+        if col not in df.columns:
+            continue
+        series = df[col]
+        info: dict[str, Any] = {}
+        if col in CATEGORICAL_FEATURES_FINAL:
+            vals = [v for v in pd.unique(series.dropna())]
+            # Keep native scalar types so OneHotEncoder sees the same semantic type.
+            info["kind"] = "categorical"
+            info["options"] = vals[:100]
+        else:
+            num = pd.to_numeric(series, errors="coerce")
+            info["kind"] = "numeric"
+            if num.notna().any():
+                info["min"] = float(num.min())
+                info["max"] = float(num.max())
+                info["median"] = float(num.median())
+        profile["columns"][col] = info
+    return profile
+
+
+def prediction_input_profile(version: str) -> dict[str, Any]:
+    """Return cached UI metadata for the selected released model/project."""
+    rec = model_record(version)
+    ctx = load_model_context(version)
+    from core.projects import get_project_manager
+    project = get_project_manager().get_project(rec.project_id)
+    root = project.root_path if project else ""
+    filename = project.dataset_filename if project else ctx.get("dataset_filename", "")
+    return _load_training_profile(root, filename)
+
+
+def _validate_optional_score(label: str, value: Any) -> None:
+    if value is None:
+        return
+    numeric = float(value)
+    if not 0.0 <= numeric <= 1.0:
+        raise ValueError(f"{label} must be between 0 and 1.")
+
+
 def prepare_quick_applicant(version: str, inputs: dict[str, Any]) -> tuple[pd.DataFrame, dict[str, Any]]:
-    for key in ["client_income","credit_amount","loan_annuity"]:
-        if float(inputs[key]) <= 0:
-            raise ValueError(f"{key.replace('_',' ').title()} must be greater than 0.")
-    age=float(inputs["age_years"]); employment=float(inputs["employment_years"])
-    children=int(inputs["child_count"]); family=int(inputs["family_members"])
-    if not 18 <= age <= 100: raise ValueError("Age must be between 18 and 100 years.")
-    if not 0 <= employment <= age: raise ValueError("Employment years must be between 0 and age.")
-    if family < 1 or children < 0 or children > family: raise ValueError("Children must be between 0 and family members.")
-    for label,key in [("Score Source 1","score_source_1"),("Score Source 2","score_source_2"),("Score Source 3","score_source_3")]:
-        val=inputs.get(key)
-        if val is not None and not 0 <= float(val) <= 1: raise ValueError(f"{label} must be between 0 and 1.")
-    ctx=load_model_context(version)
-    raw_defaults=dict(ctx["raw_feature_defaults"])
-    raw=pd.DataFrame([{c:raw_defaults.get(c) for c in ctx["raw_input_columns"]}])
-    overrides={
-        "Client_Income":float(inputs["client_income"]),"Credit_Amount":float(inputs["credit_amount"]),"Loan_Annuity":float(inputs["loan_annuity"]),
-        "Child_Count":children,"Client_Family_Members":family,"Age_Days":-(age*365.25),"Employed_Days":-(employment*365.25),
-        "Score_Source_1":inputs.get("score_source_1"),"Score_Source_2":inputs.get("score_source_2"),"Score_Source_3":inputs.get("score_source_3"),
+    """Build a dtype-safe raw applicant row, then reuse the authoritative feature pipeline."""
+    ctx = load_model_context(version)
+    rec = model_record(version)
+    raw_defaults = dict(ctx["raw_feature_defaults"])
+    raw = pd.DataFrame([{c: raw_defaults.get(c) for c in ctx["raw_input_columns"]}])
+
+    direct = inputs.get("raw_overrides") if isinstance(inputs, dict) else None
+    overrides: dict[str, Any] = dict(direct or {})
+
+    # Backward-compatible aliases for the original compact form.
+    alias_map = {
+        "client_income": "Client_Income",
+        "credit_amount": "Credit_Amount",
+        "loan_annuity": "Loan_Annuity",
+        "child_count": "Child_Count",
+        "family_members": "Client_Family_Members",
+        "score_source_1": "Score_Source_1",
+        "score_source_2": "Score_Source_2",
+        "score_source_3": "Score_Source_3",
+        "population_region_relative": "Population_Region_Relative",
+        "phone_change": "Phone_Change",
+        "credit_bureau": "Credit_Bureau",
+        "social_circle_default": "Social_Circle_Default",
+        "own_house_age": "Own_House_Age",
     }
-    for col,val in overrides.items():
-        if col in raw.columns: raw.loc[0,col]=val
-    cleaned=clean_raw_dataframe(raw,drop_constant=False).drop(columns=["Mobile_Tag"],errors="ignore")
-    engineered=engineer_features(cleaned)
-    applicant=engineered.reindex(columns=ctx["feature_columns"])
-    supplied_raw={c for c,v in overrides.items() if c in raw.columns and v is not None}
-    assumptions=[c for c in raw.columns if c not in supplied_raw]
-    supplied=len(supplied_raw)
-    return applicant,{"raw":raw,"engineered":engineered,"assumed_fields":assumptions,"supplied_fields":supplied,"base_rate":float(ctx.get("base_default_rate",0.0))}
+    for old_key, raw_key in alias_map.items():
+        if old_key in inputs and inputs.get(old_key) is not None:
+            overrides[raw_key] = inputs.get(old_key)
+
+    # Derived duration aliases supplied by the UI.
+    if inputs.get("age_years") is not None and "Age_Days" not in overrides:
+        overrides["Age_Days"] = -(float(inputs["age_years"]) * 365.25)
+    if inputs.get("employment_years") is not None and "Employed_Days" not in overrides:
+        overrides["Employed_Days"] = -(float(inputs["employment_years"]) * 365.25)
+
+    for col, value in list(overrides.items()):
+        if col in raw.columns and value is not None:
+            raw.loc[0, col] = value
+
+    # Validate the core financial/profile inputs whenever supplied.
+    for col, label in [("Client_Income", "Annual income"), ("Credit_Amount", "Loan amount"), ("Loan_Annuity", "Loan annuity")]:
+        if col in raw.columns:
+            value = pd.to_numeric(raw.loc[0, col], errors="coerce")
+            if pd.notna(value) and float(value) <= 0:
+                raise ValueError(f"{label} must be greater than 0.")
+    if "Age_Days" in raw.columns:
+        age_value = pd.to_numeric(raw.loc[0, "Age_Days"], errors="coerce")
+        if pd.notna(age_value):
+            age = abs(float(age_value)) / 365.25
+            if not 18 <= age <= 100:
+                raise ValueError("Age must be between 18 and 100 years.")
+    if "Employed_Days" in raw.columns:
+        emp_value = pd.to_numeric(raw.loc[0, "Employed_Days"], errors="coerce")
+        if pd.notna(emp_value) and float(emp_value) != 365243:
+            employment = abs(float(emp_value)) / 365.25
+            if "Age_Days" in raw.columns:
+                age_value = pd.to_numeric(raw.loc[0, "Age_Days"], errors="coerce")
+                if pd.notna(age_value) and employment > abs(float(age_value)) / 365.25:
+                    raise ValueError("Employment years must not exceed age.")
+    if "Child_Count" in raw.columns and "Client_Family_Members" in raw.columns:
+        children = pd.to_numeric(raw.loc[0, "Child_Count"], errors="coerce")
+        family = pd.to_numeric(raw.loc[0, "Client_Family_Members"], errors="coerce")
+        if pd.notna(children) and children < 0:
+            raise ValueError("Children cannot be negative.")
+        if pd.notna(family) and family < 1:
+            raise ValueError("Family members must be at least 1.")
+        if pd.notna(children) and pd.notna(family) and children > family:
+            raise ValueError("Children cannot exceed family members.")
+
+    for label, key in [("Score Source 1", "Score_Source_1"), ("Score Source 2", "Score_Source_2"), ("Score Source 3", "Score_Source_3")]:
+        _validate_optional_score(label, overrides.get(key))
+
+    # Normalize numeric inputs before feature engineering. This also protects
+    # selected bulk rows whose mixed dtype can become object-backed Series.
+    for col in [
+        "Client_Income", "Credit_Amount", "Loan_Annuity", "Population_Region_Relative",
+        "Age_Days", "Employed_Days", "Registration_Days", "ID_Days", "Own_House_Age",
+        "Client_Family_Members", "Child_Count", "Application_Process_Day", "Application_Process_Hour",
+        "Score_Source_1", "Score_Source_2", "Score_Source_3", "Social_Circle_Default",
+        "Phone_Change", "Credit_Bureau", "Car_Owned", "Bike_Owned", "Active_Loan", "House_Own",
+        "Homephone_Tag", "Workphone_Working", "Cleint_City_Rating",
+    ]:
+        if col in raw.columns:
+            raw[col] = pd.to_numeric(raw[col], errors="coerce")
+
+    cleaned = clean_raw_dataframe(raw, drop_constant=False).drop(columns=["Mobile_Tag"], errors="ignore")
+    engineered = engineer_features(cleaned)
+    applicant = engineered.reindex(columns=ctx["feature_columns"])
+
+    supplied_raw = {c for c in overrides if c in raw.columns and overrides.get(c) is not None}
+    assumptions = [c for c in raw.columns if c not in supplied_raw]
+    meta = {
+        "raw": raw,
+        "engineered": engineered,
+        "assumed_fields": assumptions,
+        "supplied_fields": len(supplied_raw),
+        "supplied_raw_fields": sorted(supplied_raw),
+        "base_rate": float(ctx.get("base_default_rate", 0.0)),
+        "project_name": rec.project_name,
+        "model_name": rec.model_name,
+    }
+    return applicant, meta
 
 
 def predict_quick(version: str, inputs: dict[str,Any]):

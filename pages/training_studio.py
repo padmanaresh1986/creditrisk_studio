@@ -232,7 +232,8 @@ def render_dataset_banner(df: pd.DataFrame) -> None:
 
 def run_phase4_training() -> None:
     from ml.training import train_candidates
-    set_busy("Training three candidate models")
+    selected_names = list(st.session_state.get("selected_model_names") or MODEL_SPECS.keys())
+    set_busy(f"Training {len(selected_names)} selected model(s)")
     try:
         with st.status("Training candidate models…", expanded=True) as status:
             bar = st.progress(0.0, text="Preparing modelling matrix")
@@ -245,18 +246,19 @@ def run_phase4_training() -> None:
             def progress(value: float, text: str) -> None:
                 bar.progress(max(0.0, min(1.0, value)), text=text)
 
-            add_log("Phase 04 started: training all three candidate models.")
+            add_log(f"Phase 04 started: training {len(selected_names)} selected model(s): {", ".join(selected_names)}.")
             project_models_root = Path(st.session_state.project_root) / "models"
             bundle = train_candidates(
                 current_df(), dictionary_map(), log=log, progress=progress,
                 artifact_root=project_models_root, project_id=st.session_state.project_id,
                 project_name=st.session_state.project_name, project_root=st.session_state.project_root,
+                model_names=selected_names,
             )
             st.session_state.training_bundle = bundle
             st.session_state.phase4_complete = True
             _sync_candidate_records()
-            status.update(label="All three candidate models trained", state="complete")
-        st.toast("Candidate training complete")
+            status.update(label=f"{len(selected_names)} selected model(s) trained", state="complete")
+        st.toast(f"{len(selected_names)} selected model(s) trained")
     except Exception as exc:
         add_log(f"ERROR during candidate training: {exc}")
         st.error(f"Training failed: {exc}")
@@ -280,7 +282,7 @@ def run_phase5_validation() -> None:
                 bar.progress(max(0.0, min(1.0, value)), text=text)
 
             bundle = st.session_state.training_bundle
-            add_log("Phase 05 started: tuning all three candidates before final CV comparison.")
+            add_log(f"Phase 05 started: tuning and validating {len(bundle["models"])} selected model(s) before final comparison.")
             bundle = tune_candidates(bundle, n_splits=2, log=log, progress=lambda p, t: progress(0.45 * p, t))
             st.session_state.training_bundle = bundle
             cv = cross_validate_candidates(bundle, n_splits=5, log=log, progress=lambda p, t: progress(0.45 + 0.35 * p, t))
@@ -326,7 +328,7 @@ def run_phase6_final() -> None:
             _sync_candidate_records()
             run_id = store.record_run(
                 st.session_state.dataset_name or "",
-                {"Project": st.session_state.get("project_name", ""), "Candidates": 3, "CV folds": 5, "Lifecycle": "Train → CV → Imbalance → Tuning → OOF Threshold → Holdout → XAI"},
+                {"Project": st.session_state.get("project_name", ""), "Models trained": len(st.session_state.get("training_bundle", {}).get("models", {})), "CV folds": 5, "Lifecycle": "Train → CV → Imbalance → Tuning → OOF Threshold → Holdout → XAI"},
                 project_id=st.session_state.get("project_id"), logs=st.session_state.get("training_logs", []),
             )
             st.session_state.last_run_id = run_id
@@ -571,28 +573,40 @@ elif phase == 2:
 # Phase 04
 # -----------------------------------------------------------------------------
 elif phase == 3:
-    from ml.models import MODEL_SPECS
     st.markdown("## 04 · Preprocessing & Model Lab")
-    st.caption("Prepare the feature matrix and fit the three candidate model families. This action does not change the workflow step automatically.")
+    st.caption("Choose which model families to train. You can train one, two, or all three. Only the models you select will enter the remaining evaluation lifecycle.")
+    available_names = list(MODEL_SPECS)
     if not st.session_state.training_bundle:
-        st.markdown("### Candidate models")
-        cols = st.columns(3)
-        for col, (name, spec) in zip(cols, MODEL_SPECS.items()):
+        current_selection = st.session_state.get("selected_model_names") or available_names
+        selected_names = st.multiselect(
+            "Models to train",
+            available_names,
+            default=[n for n in available_names if n in current_selection],
+            format_func=lambda n: f"{n} · {MODEL_SPECS[n].family}",
+            disabled=st.session_state.busy,
+            help="Select at least one model. The same engineered feature matrix and preprocessing architecture are used for all selected candidates.",
+        )
+        st.session_state.selected_model_names = selected_names
+        cards = st.columns(3)
+        for col, name in zip(cards, available_names):
+            spec = MODEL_SPECS[name]
             with col:
                 with st.container(border=True):
-                    st.markdown(f"**{name}**")
+                    st.markdown(f"### {name}")
                     st.caption(spec.family)
                     st.write(spec.description)
                     st.caption(spec.strengths)
+                    selected_tag = "SELECTED" if name in selected_names else "NOT SELECTED"
+                    st.caption(selected_tag)
                     with st.expander("Model settings", expanded=False):
                         st.json(spec.best_params, expanded=False)
-        st.markdown("### Run control")
-        st.info("Training runs only when you start it. All three models are fitted with the same engineered data and preprocessing architecture.")
-        if st.button("Train all 3 candidate models", type="primary", width="stretch", icon=":material/play_arrow:", disabled=st.session_state.busy):
+        st.info(f"{len(selected_names)} model(s) selected. Training will run only when you start it.")
+        if st.button("Train selected models", type="primary", width="stretch", icon=":material/play_arrow:", disabled=st.session_state.busy or not selected_names):
             run_phase4_training()
     else:
         bundle = st.session_state.training_bundle
-        st.success("All three candidate models are trained. Use Next to continue to validation.")
+        selected_names = list(bundle["models"].keys())
+        st.success(f"{len(selected_names)} selected model(s) are trained. Use Next to continue to validation.")
         rows = []
         for name, info in bundle["models"].items():
             rows.append({
@@ -604,7 +618,7 @@ elif phase == 3:
                 "Tuned": "Yes" if bundle.get("tuned") else "Not yet",
             })
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-        cols = st.columns(3)
+        cols = st.columns(len(selected_names))
         for col, (name, info) in zip(cols, bundle["models"].items()):
             with col:
                 with st.container(border=True):
@@ -632,7 +646,7 @@ elif phase == 4:
     st.markdown("## 05 · Validation, Imbalance & Tuning")
     bundle = st.session_state.training_bundle
     if not bundle:
-        empty_state("Validation is waiting", "Train the three candidate models in Phase 04 before running validation.", "Use Back to return to Phase 04")
+        empty_state("Validation is waiting", "Train at least one selected model in Phase 04 before running validation.", "Use Back to return to Phase 04")
     elif not st.session_state.get("phase5_complete"):
         st.info("This phase performs all validation work for all three candidates: compact hyperparameter tuning, 5-fold stratified cross-validation and class-imbalance comparison.")
         if st.button("Run validation + imbalance + tuning", type="primary", width="stretch", icon=":material/model_training:", disabled=st.session_state.busy):
@@ -787,71 +801,63 @@ elif phase == 6:
     final = st.session_state.final_bundle
     cv = st.session_state.cv_bundle
     if not final or not cv:
-        empty_state("Release is waiting", "Complete final evaluation before publishing models to the prediction experience.", "Use Back to return to Phase 06")
+        empty_state("Release is waiting", "Complete final evaluation before selecting the final prediction model.", "Use Back to return to Phase 06")
     elif not st.session_state.get("phase7_complete"):
         rows = []
         for name, out in final.items():
             row = cv["cv_results"].query("Model == @name").iloc[0]
             rows.append({
-                "Model": name,
-                "Family": out["family"],
-                "CV PR-AUC": row["PR-AUC"],
-                "CV PR-AUC STD": row["PR-AUC STD"],
-                "Threshold": out["threshold"],
-                "Test PR-AUC": out["final_pr_auc"],
-                "Test ROC-AUC": out["final_roc_auc"],
-                "Test Recall": out["final_recall"],
-                "Test F1": out["final_f1"],
+                "Model": name, "Family": out["family"],
+                "CV PR-AUC": row["PR-AUC"], "CV PR-AUC STD": row["PR-AUC STD"],
+                "Threshold": out["threshold"], "Test PR-AUC": out["final_pr_auc"],
+                "Test ROC-AUC": out["final_roc_auc"], "Test Recall": out["final_recall"], "Test F1": out["final_f1"],
             })
-        release = pd.DataFrame(rows).sort_values("CV PR-AUC", ascending=False)
-        st.markdown("### Candidate release panel")
-        cards = st.columns(3)
-        for col, rec in zip(cards, release.to_dict("records")):
-            with col:
-                with st.container(border=True):
-                    st.caption("DEFAULT SUGGESTION" if rec["Model"] == release.iloc[0]["Model"] else "AVAILABLE CANDIDATE")
-                    st.markdown(f"### {rec['Model']}")
-                    st.caption(rec["Family"])
-                    c1, c2 = st.columns(2)
-                    c1.metric("CV PR-AUC", f"{rec['CV PR-AUC']:.4f}")
-                    c2.metric("Test PR-AUC", f"{rec['Test PR-AUC']:.4f}")
-                    st.write(f"Threshold: **{rec['Threshold']:.2f}**")
-                    st.write(f"Recall: **{rec['Test Recall']:.1%}** · F1: **{rec['Test F1']:.3f}**")
-        st.dataframe(release.round(4), width="stretch", hide_index=True)
-        suggested = release.iloc[0]["Model"]
-        st.info(f"The application will preselect **{suggested}** for convenience. All three candidates will be available to Users after release.")
-        if st.button("Publish all 3 models", type="primary", width="stretch", icon=":material/publish:", disabled=st.session_state.busy):
-            set_busy("Publishing models")
+        release = pd.DataFrame(rows).sort_values("CV PR-AUC", ascending=False).reset_index(drop=True)
+        st.markdown("### Final prediction model")
+        st.write("Select exactly one evaluated model for the User-facing prediction experience. Other trained models remain available to Admins for review and history.")
+        names = release["Model"].tolist()
+        default_model = st.session_state.get("final_model_name") or names[0]
+        selected_final = st.radio(
+            "Final prediction model", names, index=names.index(default_model) if default_model in names else 0,
+            horizontal=True, disabled=st.session_state.busy,
+        )
+        st.session_state.final_model_name = selected_final
+        chosen_row = release[release["Model"] == selected_final].iloc[0]
+        cards = st.columns(4)
+        cards[0].metric("CV PR-AUC", f"{chosen_row['CV PR-AUC']:.4f}")
+        cards[1].metric("Holdout PR-AUC", f"{chosen_row['Test PR-AUC']:.4f}")
+        cards[2].metric("Recall", f"{chosen_row['Test Recall']:.1%}")
+        cards[3].metric("F1", f"{chosen_row['Test F1']:.3f}")
+        with st.expander("View evaluated models", expanded=False):
+            st.dataframe(release.round(4), width="stretch", hide_index=True)
+        st.info(f"The selected model will be the only model available to Users for this active project. Current selection: **{selected_final}**.")
+        if st.button("Set as final prediction model", type="primary", width="stretch", icon=":material/publish:", disabled=st.session_state.busy):
+            set_busy("Publishing final prediction model")
             try:
-                versions = [out["version"] for out in final.values()]
-                suggested_version = next(out["version"] for name, out in final.items() if name == suggested)
+                out = final[selected_final]
                 synced = set(_sync_candidate_records())
-                missing_versions = [v for v in versions if v not in synced or v not in store.models]
-                if missing_versions:
-                    raise RuntimeError(
-                        "Some final model artifacts are not registered in the current session: "
-                        + ", ".join(missing_versions)
-                    )
-                store.publish_models(versions, suggested_version)
+                if out["version"] not in synced or out["version"] not in store.models:
+                    raise RuntimeError(f"Final model artifact was not registered: {out['version']}")
+                store.set_user_project(st.session_state.project_id, out["version"])
                 st.session_state.phase7_complete = True
                 st.session_state.completed_phases.add(6)
-                add_log(f"Published all three candidate models. Default suggestion: {suggested}.")
-                st.success("All three models are published and available to the prediction experience.")
+                add_log(f"Set final prediction model for Users: {selected_final} ({out['version']}).")
+                st.success(f"{selected_final} is now the final prediction model for Users.")
+            except Exception as exc:
+                add_log(f"ERROR during final model release: {exc}")
+                st.error(f"Model release failed: {exc}")
             finally:
                 clear_busy()
     else:
         published = store.user_models()
-        st.success("Model release is complete.")
-        cards = st.columns(len(published)) if published else []
-        for col, rec in zip(cards, published):
-            with col:
-                with st.container(border=True):
-                    st.caption("DEFAULT" if rec.status == "Default" else "AVAILABLE")
-                    st.markdown(f"### {rec.model_name}")
-                    st.metric("CV PR-AUC", f"{rec.cv_metrics.get('PR-AUC', float('nan')):.4f}")
-                    st.metric("Threshold", f"{rec.threshold:.2f}")
-                    st.caption(f"Version {rec.version}")
-        st.write("Users can choose any published model on the prediction page. The default is highlighted and preselected.")
+        st.success("Final prediction model is configured for Users.")
+        if published:
+            rec = published[0]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Project", rec.project_name)
+            c2.metric("Final model", rec.model_name)
+            c3.metric("Threshold", f"{rec.threshold:.1%}")
+            st.caption(f"Users do not select a model; this administrator-selected model is used automatically. Version: {rec.version}")
         st.markdown("### Finish")
         if st.button("Finish and open Admin Dashboard", type="primary", width="stretch", icon=":material/dashboard:", disabled=st.session_state.busy):
             st.switch_page("pages/home.py")

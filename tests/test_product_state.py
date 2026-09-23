@@ -10,6 +10,8 @@ import pandas as pd
 from core.projects import ProjectManager
 from core.state import AppStore
 from ml.models import MODEL_SPECS, build_model_pipeline
+from ml.training import train_candidates
+import inspect
 
 
 def make_store():
@@ -44,7 +46,7 @@ def test_model_pipeline_factory_builds_all_candidates():
         assert "model" in pipe.named_steps
 
 
-def test_publish_models_marks_recommended_default_and_activates_project():
+def test_publish_models_marks_only_one_final_model_and_activates_project():
     td, manager, store, project = make_store()
     try:
         versions=[]
@@ -62,10 +64,11 @@ def test_publish_models_marks_recommended_default_and_activates_project():
                 "threshold": 0.3, "artifact_path": str(artifact), "context_path": str(context),
             })
             versions.append(version)
-        store.publish_models(versions, "release-1")
+        store.publish_models(["release-1"], "release-1")
         assert store.recommended_version == "release-1"
         assert store.models["release-1"].status == "Default"
-        assert all(store.models[v].is_published for v in versions)
+        assert store.user_models()[0].version == "release-1"
+        assert all(store.models[v].status == "Trained" for v in versions[1:])
         assert manager.active_project_id == project.project_id
     finally:
         td.cleanup()
@@ -98,3 +101,33 @@ def test_model_record_published_filter_property():
     assert candidate.is_published is False
     assert published.is_published is True
     assert default.is_published is True
+
+
+def test_user_models_exposes_only_final_model():
+    td, manager, store, project = make_store()
+    try:
+        versions=[]
+        for idx, name in enumerate(["Random Forest", "XGBoost", "L1 Logistic Regression"], 1):
+            version=f"m{idx}"
+            artifact=Path(project.root_path)/"models"/"releases"/f"{version}.joblib"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_bytes(b"x")
+            context=artifact.with_suffix(".json")
+            context.write_text("{}", encoding="utf-8")
+            store.register_model({"project_id":project.project_id,"model_name":name,"family":"test","version":version,
+                                  "cv_metrics":{"PR-AUC":0.1*idx},"final_metrics":{"PR-AUC":0.1*idx},
+                                  "artifact_path":str(artifact),"context_path":str(context)})
+            versions.append(version)
+        store.set_user_project(project.project_id, versions[1])
+        visible=store.user_models()
+        assert [r.version for r in visible] == [versions[1]]
+        assert store.models[versions[1]].status == "Default"
+        assert all(store.models[v].status == "Trained" for v in (versions[0], versions[2]))
+    finally:
+        td.cleanup()
+
+
+def test_training_engine_accepts_selected_model_names():
+    params=inspect.signature(train_candidates).parameters
+    assert "model_names" in params
+    assert params["model_names"].default is None

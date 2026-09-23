@@ -9,7 +9,7 @@ from core.state import get_store
 
 store = get_store()
 manager = get_project_manager()
-section_header("ADMIN WORKSPACE", "Model & Project Registry", "Durable local registry of project datasets, trained model artifacts, versions and User-facing releases.")
+section_header("ADMIN WORKSPACE", "Model & Project Registry", "Durable local registry of project datasets, trained model artifacts, versions and the single User-facing final model.")
 
 projects = manager.list_projects()
 if not projects:
@@ -28,7 +28,7 @@ selected = manager.get_project(selected_id)
 assert selected is not None
 
 rows=[]
-for rec in [r for r in store.models.values() if r.project_id == selected_id]:
+for rec in [r for r in store.models.values() if r.project_id == selected_id and r.is_trained]:
     rows.append({
         "Model": rec.model_name, "Version": rec.version, "Status": rec.status,
         "CV PR-AUC": rec.cv_metrics.get("PR-AUC", float("nan")),
@@ -45,8 +45,8 @@ eligible=[r for r in store.latest_final_models(selected_id) if r.artifact_path]
 if eligible:
     default_sorted=sorted(eligible,key=lambda r: float(r.cv_metrics.get("PR-AUC",-1)),reverse=True)
     choice_map={f"{r.model_name} · {r.version}": r.version for r in default_sorted}
-    recommendation=st.selectbox("Default model when this project is active", list(choice_map))
-    if st.button("Make project User-facing", type="primary", icon=":material/publish:", width="stretch"):
+    recommendation=st.selectbox("Final prediction model for this project", list(choice_map))
+    if st.button("Set project + model for Users", type="primary", icon=":material/publish:", width="stretch"):
         store.set_user_project(selected_id, choice_map[recommendation])
         st.success("Project is now the active User-facing project.")
         st.rerun()

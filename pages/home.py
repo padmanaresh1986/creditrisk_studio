@@ -50,14 +50,14 @@ selected_project = manager.get_project(selected_project_id)
 assert selected_project is not None
 store.select_project(selected_project_id)
 
-project_models = [r for r in store.models.values() if r.project_id == selected_project_id]
+project_models = [r for r in store.models.values() if r.project_id == selected_project_id and r.is_trained]
 if project_models:
     final_models = [r for r in project_models if r.final_metrics]
     st.markdown("### Selected project")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Rows", f"{selected_project.rows:,}")
     c2.metric("Default rate", f"{selected_project.default_rate:.2%}")
-    c3.metric("Model versions", len(project_models))
+    c3.metric("Trained model versions", len(project_models))
     c4.metric("Evaluated models", len(final_models))
 
     rows=[]
@@ -78,18 +78,20 @@ if project_models:
     if eligible:
         eligible_sorted = sorted(eligible, key=lambda r: float(r.cv_metrics.get("PR-AUC", -1)), reverse=True)
         labels = {f"{r.model_name} · CV PR-AUC {r.cv_metrics.get('PR-AUC', float('nan')):.4f} · {r.version}": r.version for r in eligible_sorted}
-        choice_label = st.selectbox("Default model for the selected project", list(labels))
+        current_final = next((r.version for r in eligible if r.status == "Default"), eligible_sorted[0].version)
+        choice_label = st.selectbox("Final prediction model", list(labels), index=list(labels.values()).index(current_final) if current_final in labels.values() else 0)
         recommended_version = labels[choice_label]
         b1, b2 = st.columns(2)
         with b1:
-            if st.button("Set this project as User Project", type="primary", width="stretch", icon=":material/publish:", disabled=store.current_project_id is None):
+            if st.button("Set project + model for Users", type="primary", width="stretch", icon=":material/publish:", disabled=store.current_project_id is None):
                 store.set_user_project(selected_project_id, recommended_version)
-                st.success(f"{selected_project.name} is now the User-facing project. Default model: {next(r.model_name for r in eligible if r.version == recommended_version)}")
+                st.success(f"{selected_project.name} is now active for Users. Final model: {next(r.model_name for r in eligible if r.version == recommended_version)}")
                 st.rerun()
         with b2:
             active = store.active_project
             if active and active.project_id == selected_project_id:
-                st.success("This is the active User project.", icon=":material/check_circle:")
+                active_model = store.active_model_name
+                st.success(f"Active for Users · {active_model}", icon=":material/check_circle:")
             else:
                 st.info("This project is not currently visible to Users.")
 

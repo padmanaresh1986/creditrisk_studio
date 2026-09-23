@@ -104,14 +104,11 @@ def risk_meter(probability: float, base_rate: float, threshold: float) -> None:
     pct = p * 100.0
     threshold_pct = t * 100.0
 
-    # Communication bands are fixed so that the visual scale is stable across applicants.
+    # Communication bands are fixed and intentionally limited to three labels.
     bands = [
-        (0.0, 2.0, "Very Low", "#1F9D55"),
-        (2.0, 5.0, "Low", "#72B54A"),
-        (5.0, 10.0, "Moderate", "#C8A238"),
-        (10.0, 20.0, "Moderately High", "#D99A2B"),
-        (20.0, 35.0, "High", "#E07A32"),
-        (35.0, 50.0, "Very High", "#C94B4B"),
+        (0.0, 10.0, "Low", "#2E9F5B"),
+        (10.0, 20.0, "Medium", "#C99B2B"),
+        (20.0, 50.0, "High", "#C84B4B"),
     ]
     visual_max = 50.0
 

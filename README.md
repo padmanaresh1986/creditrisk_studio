@@ -4,6 +4,12 @@ CreditRisk Studio is a Streamlit-only academic automobile-loan default analytics
 
 The application is intentionally self-contained for an academic/local deployment: interactive workflow state is kept in Streamlit session state, while trained projects, source datasets, model artifacts, analysis outputs and run logs are persisted locally under the `projects/` directory. An in-process registry/cache is hydrated from that local project library at startup. There is no FastAPI service, database, Redis queue, MLflow server, or external object store in this build.
 
+## Runtime logging and troubleshooting
+
+Prediction, bulk-scoring, training, and application lifecycle events are logged at `DEBUG`, `INFO`, `WARNING`, and `ERROR` levels. Workflow pages expose a collapsed terminal-style console for the relevant channel, while the full Python traceback is also printed to the Streamlit server terminal for development troubleshooting. User-facing error messages contain the exception type and message without replacing the diagnostic console.
+
+For a quick prediction failure, expand **Prediction console** after the attempt. For a bulk failure, expand **Bulk prediction console**. Long-running training activity remains in **Processing console**.
+
 ## Product goals
 
 - Keep the application empty at startup: no preloaded dataset, model, metrics, or predictions.
@@ -556,3 +562,77 @@ python -m compileall .
 ## Future extensions
 
 The current build intentionally uses a local filesystem project library plus Streamlit session state. A future production architecture could later add a database-backed project registry, object storage, external model registry, background workers, stronger authentication, audit persistence and monitoring without changing the core ML interfaces.
+
+## Bulk scoring type normalization
+
+Bulk CSV/Excel files can carry the same business field using different physical types (for example, an application hour may be numeric in one file and text in another). Before feature engineering, the shared cleaning layer explicitly coerces numeric-as-text fields, credit amount, credit score source 3, and application-process hour to numeric values. This is important because the cyclical hour features use `sin`/`cos` and require a numeric input.
+
+The row-detail table also renders mixed-type source values as display strings so Streamlit/Arrow receives a homogeneous display column; this is a presentation conversion only and does not change the values used for model scoring.
+
+
+## Prediction input and explainability
+
+Quick Prediction exposes a broader set of application inputs rather than relying only on a small seven-field demo. Core financial, household, profile and external-score fields are visible on the main form; additional credit, employment, contact and application signals are available in a collapsed advanced section.
+
+The external score fields are genuine normalized source variables from the training data. They use the source scale `0–1`; this is not a percentage. The fields remain optional because the source data itself contains missing score values. When a score is unavailable, the standard model preprocessing/imputation strategy is used and the UI reports the field as assumed.
+
+Local SHAP evidence is shown in two views: the full model-space evidence remains available to administrators, while the User prediction page aggregates encoded and engineered model features back to the raw application fields that the User actually supplied. Contributions that move the model output toward the default class are shown in red; contributions that move it away are shown in green. For engineered features that depend on several raw inputs, the signed contribution is split across those source inputs purely for presentation clarity; this is not a causal attribution.
+
+
+## Final model governance
+
+The system separates **training candidates** from the **final prediction model**. The Model Lab allows the administrator to train one, two, or all three supported model families. All selected models continue through the same validation, imbalance, threshold, holdout, and explainability lifecycle.
+
+After evaluation, exactly one model is selected for User prediction. The administrator also selects which trained project is active. Users never choose a model in Quick Prediction or Bulk Prediction. The runtime resolves: `active project → administrator-selected final model → prediction`.
+
+Other trained model versions remain persisted and visible to Admins for analysis/history, but they are not exposed to Users.
+
+```mermaid
+sequenceDiagram
+    participant A as Admin
+    participant T as Training Studio
+    participant R as Project / Model Registry
+    participant U as User
+
+    A->>T: Select 1, 2, or 3 model families
+    A->>T: Start training
+    T->>R: Save trained model versions
+    A->>T: Run validation / tuning / thresholds / holdout
+    T->>R: Save evaluated artifacts
+    A->>R: Select one final model + active project
+    R-->>U: Expose only selected final model
+    U->>R: Submit application
+    R-->>U: Probability + decision + XAI
+```
+
+
+## v6.6 workflow and release behavior
+
+- Model Lab supports training **one, two, or all three** model families.
+- The selected subset is carried through tuning, 5-fold validation, class-imbalance analysis, out-of-fold threshold selection, holdout evaluation, and explainability.
+- The administrator selects **one final prediction model** after evaluation.
+- The active configuration exposed to Users is **one project + one final model**.
+- Users do not select a model in Quick Prediction or Bulk Prediction.
+- Admin dashboard model tables show trained/evaluated model versions, not untrained candidate entries.
+- The riskometer has three communication bands: Low, Medium, High. The operating threshold is shown separately from the risk band.
+
+```mermaid
+flowchart TB
+    P[Create Project] --> S[Select 1..3 Model Families]
+    S --> T[Train Selected Models]
+    T --> V[Validate + Imbalance + Tune]
+    V --> O[OOF Threshold Optimisation]
+    O --> H[Untouched Holdout Evaluation]
+    H --> F[Admin Selects One Final Model]
+    F --> A[Activate Project + Final Model]
+    A --> U1[User Quick Prediction]
+    A --> U2[User Bulk Prediction]
+    U1 --> R[Automatic Prediction with Active Final Model]
+    U2 --> R
+```
+
+### Prediction diagnostics
+
+Quick Prediction and Bulk Prediction each expose a collapsed terminal-style console for the most recent attempt. Entries are tagged `DEBUG`, `INFO`, `WARNING`, or `ERROR`. On exceptions, the UI receives a concise error summary and the Streamlit server terminal receives the full Python traceback for development diagnostics.
+
+The raw-input SHAP aggregation API is called with keyword arguments to prevent dictionary/supplied-field argument-order errors. It also contains a compatibility guard for older positional callers.
