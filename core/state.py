@@ -49,43 +49,110 @@ class AppStore:
         self.manager = manager or get_project_manager()
         self.models: dict[str, ModelRecord] = {}
         self.training_runs: dict[str, dict[str, Any]] = {}
+        self._runs_loaded = False
         self.active_project_id: str | None = self.manager.active_project_id
         self.current_project_id: str | None = self.active_project_id
         self.recommended_version: str | None = None
         self._hydrate_from_disk()
 
     def _hydrate_from_disk(self) -> None:
+        """Load only lightweight project metadata at startup. Model indexes are lazy."""
         with self._lock:
             self.models.clear()
-            self.training_runs = {str(r.get("Run ID")): r for r in self.manager.list_runs() if r.get("Run ID")}
-            for project in self.manager.list_projects():
-                for row in self.manager.model_index(project.project_id):
-                    try:
-                        row = dict(row)
-                        row.setdefault("project_id", project.project_id)
-                        row.setdefault("project_name", project.name)
-                        project_root = Path(project.root_path)
-                        for path_key in ("artifact_path", "context_path"):
-                            value = row.get(path_key, "")
-                            if value and not Path(str(value)).is_absolute():
-                                row[path_key] = str((project_root / str(value)).resolve())
-                        rec = ModelRecord(**row)
-                        if rec.status == "Candidate" and (rec.final_metrics or rec.artifact_path):
-                            rec.status = "Trained"
-                        if rec.status == "Candidate" and (rec.final_metrics or rec.artifact_path):
-                            rec.status = "Trained"
-                    except TypeError:
-                        continue
-                    self.models[rec.version] = rec
+            self._hydrated_project_ids: set[str] = set()
+            self._model_index_mtime_ns: dict[str, int] = {}
+            self.training_runs = {}
+            self._runs_loaded = False
             active = self.manager.active_project()
             if active:
                 self.active_project_id = active.project_id
+                self.current_project_id = active.project_id
                 self.recommended_version = active.recommended_version
             else:
+                self.active_project_id = None
+                self.current_project_id = None
                 self.recommended_version = None
 
-    def refresh(self) -> None:
+    def _ensure_project_models_loaded(self, project_id: str | None) -> None:
+        if not project_id:
+            return
+        with self._lock:
+            project = self.manager.get_project(project_id)
+            if project is None:
+                return
+            index_path = self.manager._models_index_path(project_id)
+            try:
+                mtime_ns = index_path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = -1
+            if project_id in self._hydrated_project_ids and self._model_index_mtime_ns.get(project_id) == mtime_ns:
+                return
+
+            # Remove any stale in-memory records for this project before reloading.
+            self.models = {v: r for v, r in self.models.items() if r.project_id != project_id}
+            for row in self.manager.model_index(project_id):
+                try:
+                    row = dict(row)
+                    row.setdefault("project_id", project.project_id)
+                    row.setdefault("project_name", project.name)
+                    project_root = Path(project.root_path)
+                    for path_key in ("artifact_path", "context_path"):
+                        value = row.get(path_key, "")
+                        if value and not Path(str(value)).is_absolute():
+                            row[path_key] = str((project_root / str(value)).resolve())
+                    rec = ModelRecord(**row)
+                    if rec.status == "Candidate" and (rec.final_metrics or rec.artifact_path):
+                        rec.status = "Trained"
+                    self.models[rec.version] = rec
+                except TypeError:
+                    continue
+            self._hydrated_project_ids.add(project_id)
+            self._model_index_mtime_ns[project_id] = mtime_ns
+
+    def _ensure_all_models_loaded(self) -> None:
+        for project in self.manager.list_projects():
+            self._ensure_project_models_loaded(project.project_id)
+
+    def get_model(self, version: str | None) -> ModelRecord | None:
+        if not version:
+            return None
+        with self._lock:
+            rec = self.models.get(version)
+            if rec is not None:
+                return rec
+            active_id = self.active_project_id
+            current_id = self.current_project_id
+        # Prediction paths normally resolve inside the active project; keep this fast.
+        for project_id in dict.fromkeys([active_id, current_id]):
+            if project_id:
+                self._ensure_project_models_loaded(project_id)
+                rec = self.models.get(version)
+                if rec is not None:
+                    return rec
+        # Explicit lookup fallback for admin/history paths.
+        for project in self.manager.list_projects():
+            if project.project_id in {active_id, current_id}:
+                continue
+            self._ensure_project_models_loaded(project.project_id)
+            rec = self.models.get(version)
+            if rec is not None:
+                return rec
+        return None
+
+    def refresh(self, project_id: str | None = None) -> None:
+        """Refresh lightweight project metadata; optionally hydrate one project."""
         self._hydrate_from_disk()
+        if project_id:
+            self._ensure_project_models_loaded(project_id)
+
+    def ensure_runs_loaded(self) -> None:
+        if self._runs_loaded:
+            return
+        with self._lock:
+            if self._runs_loaded:
+                return
+            self.training_runs = {str(r.get("Run ID")): r for r in self.manager.list_runs() if r.get("Run ID")}
+            self._runs_loaded = True
 
     def has_any_projects(self) -> bool:
         return bool(self.manager.list_projects())
@@ -101,11 +168,13 @@ class AppStore:
     @property
     def has_models(self) -> bool:
         pid = self.current_project_id
+        self._ensure_project_models_loaded(pid)
         with self._lock:
             return any(r.project_id == pid for r in self.models.values())
 
     @property
     def active_model_name(self) -> str:
+        self._ensure_project_models_loaded(self.active_project_id)
         with self._lock:
             rec = self.models.get(self.recommended_version or "")
             if rec and rec.project_id == self.active_project_id:
@@ -114,16 +183,19 @@ class AppStore:
 
     @property
     def active_model_version(self) -> str:
+        self._ensure_project_models_loaded(self.active_project_id)
         rec = self.models.get(self.recommended_version or "")
         return rec.version if rec and rec.project_id == self.active_project_id else "—"
 
     @property
     def active_threshold(self) -> float:
+        self._ensure_project_models_loaded(self.active_project_id)
         rec = self.models.get(self.recommended_version or "")
         return float(rec.threshold) if rec and rec.project_id == self.active_project_id else 0.50
 
     @property
     def active_metrics(self) -> dict[str, float]:
+        self._ensure_project_models_loaded(self.active_project_id)
         rec = self.models.get(self.recommended_version or "")
         return rec.final_metrics.copy() if rec and rec.project_id == self.active_project_id else {}
 
@@ -156,8 +228,10 @@ class AppStore:
             return rec
 
     def replace_candidate(self, version: str, **updates: Any) -> ModelRecord:
+        rec = self.get_model(version)
+        if rec is None:
+            raise KeyError(version)
         with self._lock:
-            rec = self.models[version]
             for key, value in updates.items():
                 setattr(rec, key, value)
             self._persist_project_models(rec.project_id)
@@ -185,8 +259,10 @@ class AppStore:
     def clear_project_models(self, project_id: str | None) -> None:
         if not project_id:
             return
+        self._ensure_project_models_loaded(project_id)
         with self._lock:
             self.models = {v: r for v, r in self.models.items() if r.project_id != project_id}
+            self._hydrated_project_ids.discard(project_id)
             self.recommended_version = self.manager.get_project(project_id).recommended_version if self.manager.get_project(project_id) else None
             self.manager.save_model_index(project_id, [])
 
@@ -194,11 +270,15 @@ class AppStore:
         """Backward-compatible wrapper that publishes exactly one final model."""
         if len(versions) != 1 or versions[0] != recommended_version:
             raise ValueError("Exactly one model must be designated as the final prediction model.")
-        self.set_user_project(self.models[recommended_version].project_id, recommended_version)
+        rec = self.get_model(recommended_version)
+        if rec is None:
+            raise KeyError(recommended_version)
+        self.set_user_project(rec.project_id, recommended_version)
 
     def user_models(self) -> list[ModelRecord]:
         """Return exactly one administrator-selected final model for the active project."""
         active_id = self.active_project_id
+        self._ensure_project_models_loaded(active_id)
         version = self.recommended_version
         if not active_id or not version:
             return []
@@ -212,10 +292,19 @@ class AppStore:
         pid = self.current_project_id
         if not pid:
             return []
+        self._ensure_project_models_loaded(pid)
         return sorted([r for r in self.models.values() if r.project_id == pid], key=lambda r: r.model_name)
+
+    def trained_models_for_project(self, project_id: str | None = None) -> list[ModelRecord]:
+        pid = project_id or self.current_project_id
+        if not pid:
+            return []
+        self._ensure_project_models_loaded(pid)
+        return sorted([r for r in self.models.values() if r.project_id == pid and r.is_trained], key=lambda r: (r.model_name, r.trained_at_utc or ""))
 
     def latest_final_models(self, project_id: str | None = None) -> list[ModelRecord]:
         pid = project_id or self.current_project_id
+        self._ensure_project_models_loaded(pid)
         latest: dict[str, ModelRecord] = {}
         for rec in self.models.values():
             if rec.project_id != pid or not rec.final_metrics or not rec.artifact_path:
@@ -231,6 +320,9 @@ class AppStore:
             project = self.manager.get_project(project_id)
             if project is None:
                 raise KeyError(project_id)
+            self._ensure_project_models_loaded(project_id)
+            if self.active_project_id and self.active_project_id != project_id:
+                self._ensure_project_models_loaded(self.active_project_id)
             eligible = self.latest_final_models(project_id)
             if not eligible:
                 raise ValueError("This project has no completed holdout model versions ready for User release.")
@@ -252,10 +344,15 @@ class AppStore:
             self.recommended_version = recommended_version
             self.active_project_id = project_id
             self.current_project_id = project_id
-            self.manager.update_project(project_id, model_versions=project.model_versions, recommended_version=recommended_version, status="Trained")
+            self.manager.update_project(
+                project_id,
+                model_versions=project.model_versions,
+                recommended_version=recommended_version,
+                recommended_model_name=self.models[recommended_version].model_name,
+                status="Trained",
+            )
             self._persist_project_models(project_id)
             self.manager.activate_project(project_id, recommended_version)
-            self.refresh()
             self.current_project_id = project_id
             self.recommended_version = recommended_version
             self.active_project_id = project_id
@@ -270,6 +367,7 @@ class AppStore:
                 **summary,
             }
             self.training_runs[run_id] = row
+            self._runs_loaded = True
             if project_id:
                 self.manager.append_run(project_id, run_id, row, logs or [])
             return run_id

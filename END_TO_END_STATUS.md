@@ -1,3 +1,7 @@
+## v6.8 Performance Pass
+
+Page navigation and startup were optimized with lazy imports, cached project metadata, lazy run-history hydration, on-demand EDA views, and deferred statistical feature-selection calculations. No model-training or prediction behavior was changed.
+
 # CreditRisk Studio — Project Persistence v6.4
 
 ## Bulk prediction fix

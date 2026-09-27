@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from io import BytesIO
-
+import streamlit as st
 import pandas as pd
 import plotly.express as px
-import streamlit as st
 
 from components.ui import empty_state, risk_meter, section_header
-from core.ml_runtime import available_user_models, build_excel_export, load_model, load_model_context, score_raw_dataframe
+from core.model_catalog import available_user_models, load_model_context
 from core.logging_utils import emit_exception, emit_log, render_console
 from core.state import get_store
 from ml.feature_engineering import raw_required_columns
 
 store = get_store()
+current_session_user = st.session_state.get("auth_user") or {}
+current_session_username = str(current_session_user.get("username", ""))
 active_project = store.active_project
 project_text = f"Active project: {active_project.name}. " if active_project else ""
 section_header("PREDICTION CENTER", "Bulk Prediction", project_text + "Score a CSV or Excel application file, inspect individual records, and download the scored workbook.")
@@ -28,13 +28,15 @@ with st.container(border=True):
     st.caption(f"{selected.family} · holdout PR-AUC {selected.final_metrics.get('PR-AUC', float('nan')):.4f} · threshold {selected.threshold:.1%}")
     st.info("Users do not select a model. Bulk scoring uses the administrator-selected final model for the active project.")
 
+
 uploaded = st.file_uploader("Upload applicant file", type=["csv", "xlsx", "xls"], disabled=st.session_state.busy)
 if uploaded is None:
     empty_state("Waiting for an applicant file", "Upload a scoring file that follows the raw predictor schema. A target column, when present, is ignored during scoring.", "CSV, XLSX and XLS are supported")
     st.stop()
 
 @st.cache_data(show_spinner=False)
-def read_upload(name: str, payload: bytes) -> pd.DataFrame:
+def read_upload(name: str, payload: bytes):
+    from io import BytesIO
     buf = BytesIO(payload)
     suffix = name.lower().split(".")[-1]
     if suffix == "csv":
@@ -42,6 +44,7 @@ def read_upload(name: str, payload: bytes) -> pd.DataFrame:
     if suffix == "xlsx":
         return pd.read_excel(buf, engine="openpyxl")
     return pd.read_excel(buf, engine="xlrd")
+
 
 try:
     with st.spinner("Reading applicant file…"):
@@ -75,6 +78,7 @@ if st.button("Run bulk scoring", type="primary", width="stretch", icon=":materia
         "bulk",
     )
     try:
+        from core.ml_runtime import score_raw_dataframe
         with st.status(f"Scoring {len(raw):,} rows with {selected.model_name}…", expanded=True) as status:
             status.write("Validating the applicant schema.")
             emit_log(f"Schema validated | columns={len(raw.columns)}", "DEBUG", "bulk")
@@ -85,6 +89,9 @@ if st.button("Run bulk scoring", type="primary", width="stretch", icon=":materia
             st.session_state.bulk_scored = scored
             st.session_state.bulk_model_version = selected.version
             st.session_state.bulk_source_name = uploaded.name
+            st.session_state.bulk_owner_username = current_session_username
+            st.session_state.bulk_owner_role = str(current_session_user.get("role", ""))
+            st.session_state.bulk_owner_project_id = selected.project_id
             emit_log("Bulk scoring complete", "INFO", "bulk")
             status.update(label="Bulk scoring complete", state="complete")
         st.rerun()
@@ -97,6 +104,17 @@ if st.button("Run bulk scoring", type="primary", width="stretch", icon=":materia
 render_console("bulk", expanded=False)
 
 scored = st.session_state.get("bulk_scored")
+owner_mismatch = (
+    st.session_state.get("bulk_owner_username") != current_session_username
+    or st.session_state.get("bulk_owner_role") != str(current_session_user.get("role", ""))
+    or st.session_state.get("bulk_owner_project_id") != selected.project_id
+)
+if owner_mismatch:
+    st.session_state.bulk_scored = None
+    st.session_state.bulk_model_version = None
+    st.session_state.bulk_source_name = None
+    scored = None
+
 if scored is None or st.session_state.get("bulk_model_version") != selected.version:
     st.info("Run bulk scoring to populate the results table for the selected model.")
     st.stop()
@@ -130,6 +148,7 @@ if selected_rows:
         risk_meter(float(row["Default_Probability"]), float(row["Training_Default_Rate"]), float(row["Threshold"]))
         raw_row = row[raw.columns].to_frame().T
         with st.spinner("Preparing row-level explanation…"):
+            from core.ml_runtime import load_model, score_raw_dataframe
             scored_row, engineered = score_raw_dataframe(raw_row, selected.version)
             ctx = load_model_context(selected.version)
             from ml.explainability import clean_display_feature, explain_local, local_shap_values
@@ -152,6 +171,7 @@ if selected_rows:
 st.markdown("### Probability distribution")
 st.plotly_chart(px.histogram(scored, x="Default_Probability", nbins=30, title=f"Default probability distribution — {selected.model_name}"), width="stretch")
 
+from core.ml_runtime import build_excel_export
 st.download_button(
     "Download scored Excel workbook",
     data=build_excel_export(scored),

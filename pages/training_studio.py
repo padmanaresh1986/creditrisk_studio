@@ -4,19 +4,16 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+import numpy as np
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-import streamlit as st
 
 from components.ui import empty_state, render_phase_strip, section_header
-from core.analysis_cache import cached_eda, cached_understanding
 from core.session import add_log, clear_busy, clear_training_state, set_busy
 from core.state import get_store
 from core.projects import get_project_manager
-from ml.feature_engineering import clean_raw_dataframe, engineer_features, detect_constant_features
-from ml.models import MODEL_SPECS
 
 
 store = get_store()
@@ -34,6 +31,11 @@ PHASES = [
 
 def current_df() -> pd.DataFrame | None:
     return st.session_state.training_df
+
+
+def model_specs():
+    from ml.models import MODEL_SPECS
+    return MODEL_SPECS
 
 
 def dictionary_map() -> dict[str, str]:
@@ -60,7 +62,7 @@ def _sync_candidate_records() -> list[str]:
     for name, info in bundle.get("models", {}).items():
         cv_row = cv_df[cv_df["Model"] == name].iloc[0].to_dict() if not cv_df.empty and (cv_df["Model"] == name).any() else {}
         out = final.get(name)
-        spec = MODEL_SPECS.get(name)
+        spec = model_specs().get(name)
         payload = {
             "model_name": name,
             "project_id": st.session_state.get("project_id", ""),
@@ -232,7 +234,7 @@ def render_dataset_banner(df: pd.DataFrame) -> None:
 
 def run_phase4_training() -> None:
     from ml.training import train_candidates
-    selected_names = list(st.session_state.get("selected_model_names") or MODEL_SPECS.keys())
+    selected_names = list(st.session_state.get("selected_model_names") or model_specs().keys())
     set_busy(f"Training {len(selected_names)} selected model(s)")
     try:
         with st.status("Training candidate models…", expanded=True) as status:
@@ -353,6 +355,7 @@ def run_pca_diagnostic(df: pd.DataFrame) -> None:
             X = preprocessor.fit_transform(eng)
             pca = PCA(n_components=0.95, random_state=42)
             pca.fit(X)
+            import numpy as np
             st.session_state.pca_diag = {"components": int(pca.n_components_), "cum": np.cumsum(pca.explained_variance_ratio_)}
             add_log(f"PCA diagnostic complete: {pca.n_components_} components retain at least 95% variance.")
             status.update(label="PCA diagnostic complete", state="complete")
@@ -434,6 +437,7 @@ if phase == 0:
                     dict_bytes = ddfile.getvalue()
                     project_manager.copy_uploads(project.project_id, train_bytes, csv.name, dict_bytes, ddfile.name)
                     clear_training_state(keep_dataset=False)
+                    new_df.attrs["_creditrisk_cache_key"] = project.dataset_fingerprint
                     st.session_state.training_df = new_df
                     st.session_state.dataset_name = csv.name
                     st.session_state.dictionary_df = dictionary
@@ -477,16 +481,24 @@ if phase == 0:
 # Phase 02
 # -----------------------------------------------------------------------------
 elif phase == 1:
+    from core.analysis_cache import cached_understanding
     from ml.schema import BINARY_CATEGORICAL_FEATURES, NOMINAL_CATEGORICAL_FEATURES, ORDINAL_CATEGORICAL_FEATURES, CALENDAR_CATEGORICAL_FEATURES
     st.markdown("## 02 · Understand & Quality")
     st.caption("This phase is descriptive: understand the target, raw schema, missingness, constants, and semantic feature types before modelling.")
-    with st.spinner("Preparing data-quality views…"):
+    with st.spinner("Preparing data-quality summary…"):
         u = cached_understanding(df)
-    tabs = st.tabs(["Target & schema", "Data quality", "Semantics", "Dictionary"])
-    with tabs[0]:
+    view = st.segmented_control(
+        "View",
+        ["Target & schema", "Data quality", "Semantics", "Dictionary"],
+        default="Target & schema",
+        key="understanding_view",
+    )
+    if view == "Target & schema":
+        import plotly.express as px
         st.plotly_chart(px.bar(u["target"], x="Class", y="Count", text="Count", title="Target distribution"), width="stretch")
         st.dataframe(u["summary"], width="stretch", hide_index=True)
-    with tabs[1]:
+    elif view == "Data quality":
+        import plotly.express as px
         miss = u["missing"]
         chart = px.bar(miss.head(15).sort_values("Missing_Percentage"), x="Missing_Percentage", y="Feature", orientation="h", title="Highest missingness")
         st.plotly_chart(chart, width="stretch")
@@ -494,7 +506,7 @@ elif phase == 1:
         st.write(f"Duplicate rows: **{df.duplicated().sum():,}** • Constant features: **{len(u['constants'])}**")
         if u["constants"]:
             st.info("Constant fields will not contribute variation to the modelling matrix and are removed before modelling.")
-    with tabs[2]:
+    elif view == "Semantics":
         rows = []
         groups = [
             ("Binary categorical", BINARY_CATEGORICAL_FEATURES),
@@ -507,7 +519,7 @@ elif phase == 1:
                 if col in df.columns:
                     rows.append({"Semantic type": group, "Feature": col})
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-    with tabs[3]:
+    else:
         dd = st.session_state.dictionary_df
         if dd is not None:
             st.dataframe(dd, width="stretch", hide_index=True)
@@ -522,31 +534,44 @@ elif phase == 1:
 # Phase 03
 # -----------------------------------------------------------------------------
 elif phase == 2:
+    from core.analysis_cache import cached_eda_base, cached_feature_selection
+    import plotly.express as px
+    import numpy as np
     st.markdown("## 03 · EDA & Feature Engineering")
-    with st.spinner("Preparing exploratory analysis…"):
-        e = cached_eda(df)
-    tabs = st.tabs(["Distributions", "Default rates", "Correlation", "Feature engineering", "Filter selection"])
-    with tabs[0]:
-        st.plotly_chart(e["hist"], width="stretch")
+    with st.spinner("Preparing engineered analysis data…"):
+        e = cached_eda_base(df)
+    view = st.segmented_control(
+        "EDA view",
+        ["Distributions", "Default rates", "Correlation", "Feature engineering", "Filter selection"],
+        default="Distributions",
+        key="eda_view",
+    )
+    if view == "Distributions":
+        from ml.eda import numeric_histogram, boxplot_figure
+        import plotly.express as px
+        st.plotly_chart(numeric_histogram(clean=e["engineered"]), width="stretch")
         with st.expander("How to read the distributions", expanded=False):
             st.write("Look for skew, long tails, concentration and plausible extremes. Financial variables often have long right tails; log-derived features are added to provide an alternative representation.")
-        st.plotly_chart(e["box"], width="stretch")
+        st.plotly_chart(boxplot_figure(clean=e["engineered"]), width="stretch")
         with st.expander("How to read the boxplots", expanded=False):
             st.write("The box contains the central 50% of observations. Isolated points may be outliers, but an extreme value is not automatically a data error.")
-    with tabs[1]:
+    elif view == "Default rates":
+        from ml.eda import categorical_default_rate, missingness_vs_default
         if e["categorical_choices"]:
             choice = st.selectbox("Categorical field", e["categorical_choices"], key="eda_cat_choice")
-            st.plotly_chart(e["cat_figs"][choice], width="stretch")
-        st.plotly_chart(e["missing_default"], width="stretch")
+            st.plotly_chart(categorical_default_rate(clean=e["clean"], col=choice), width="stretch")
+        st.plotly_chart(missingness_vs_default(clean=e["clean"]), width="stretch")
         with st.expander("How to interpret default-rate comparisons", expanded=False):
             st.write("These bars show observed default rates within groups in the labelled data. Group differences are descriptive and do not establish causal effects.")
-    with tabs[2]:
-        st.plotly_chart(e["corr_fig"], width="stretch")
-        upper = e["corr"].abs().where(np.triu(np.ones(e["corr"].shape), k=1).astype(bool)).stack().sort_values(ascending=False)
+    elif view == "Correlation":
+        from ml.eda import correlation_figure
+        corr_fig, corr = correlation_figure(clean=e["engineered"])
+        st.plotly_chart(corr_fig, width="stretch")
+        upper = corr.abs().where(np.triu(np.ones(corr.shape), k=1).astype(bool)).stack().sort_values(ascending=False)
         st.dataframe(upper.head(20).to_frame("Absolute correlation"), width="stretch")
         with st.expander("How to read the correlation heatmap", expanded=False):
             st.write("Spearman values near +1 or -1 indicate strong monotonic association. Correlation is a redundancy diagnostic; it is not proof of causation.")
-    with tabs[3]:
+    elif view == "Feature engineering":
         st.dataframe(pd.DataFrame({"Engineered feature": e["new_features"]}), width="stretch", hide_index=True)
         examples = [c for c in [
             "Loan_to_Income_Ratio", "Annuity_to_Income_Ratio", "Credit_per_Family_Member", "Children_to_Family_Ratio",
@@ -557,17 +582,23 @@ elif phase == 2:
         st.dataframe(e["engineered"][examples].describe().T.round(4), width="stretch")
         with st.expander("Why these features are created", expanded=False):
             st.write("Financial ratios represent burden relative to income or household size; score aggregates summarise available external scores; missingness indicators encode availability; hour encodings preserve circular time structure; log features provide a compressed view of skewed financial amounts.")
-    with tabs[4]:
-        chi, mi = e["chi"], e["mi"]
-        st.markdown("**Chi-square — categorical features**")
-        st.dataframe(chi.round(6), width="stretch", hide_index=True)
-        if not chi.empty:
-            st.plotly_chart(px.bar(chi.head(15).sort_values("P_Value", ascending=False), x="P_Value", y="Feature", orientation="h", title="Chi-square p-values"), width="stretch")
-        st.markdown("**Mutual information — numeric / engineered features**")
-        st.dataframe(mi.round(6), width="stretch", hide_index=True)
-        st.plotly_chart(px.bar(mi.head(15).sort_values("Mutual_Information"), x="Mutual_Information", y="Feature", orientation="h", title="Mutual information ranking"), width="stretch")
-        with st.expander("How to interpret filter selection", expanded=False):
-            st.write("Chi-square and mutual information are model-independent diagnostics. A weak univariate relationship does not automatically mean a feature is useless because models can learn interactions and nonlinear patterns.")
+    else:
+        if st.button("Run chi-square and mutual-information analysis", icon=":material/query_stats:", disabled=st.session_state.busy):
+            st.session_state.eda_filter_selection_ready = True
+        if not st.session_state.get("eda_filter_selection_ready"):
+            st.info("These statistical tests are intentionally deferred because they are the heaviest EDA calculation.")
+        else:
+            chi, mi = cached_feature_selection(df)
+            st.markdown("**Chi-square — categorical features**")
+            st.dataframe(chi.round(6), width="stretch", hide_index=True)
+            if not chi.empty:
+                import plotly.express as px
+                st.plotly_chart(px.bar(chi.head(15).sort_values("P_Value", ascending=False), x="P_Value", y="Feature", orientation="h", title="Chi-square p-values"), width="stretch")
+            st.markdown("**Mutual information — numeric / engineered features**")
+            st.dataframe(mi.round(6), width="stretch", hide_index=True)
+            st.plotly_chart(px.bar(mi.head(15).sort_values("Mutual_Information"), x="Mutual_Information", y="Feature", orientation="h", title="Mutual information ranking"), width="stretch")
+            with st.expander("How to interpret filter selection", expanded=False):
+                st.write("Chi-square and mutual information are model-independent diagnostics. A weak univariate relationship does not automatically mean a feature is useless because models can learn interactions and nonlinear patterns.")
 
 # -----------------------------------------------------------------------------
 # Phase 04
@@ -575,6 +606,7 @@ elif phase == 2:
 elif phase == 3:
     st.markdown("## 04 · Preprocessing & Model Lab")
     st.caption("Choose which model families to train. You can train one, two, or all three. Only the models you select will enter the remaining evaluation lifecycle.")
+    MODEL_SPECS = model_specs()
     available_names = list(MODEL_SPECS)
     if not st.session_state.training_bundle:
         current_selection = st.session_state.get("selected_model_names") or available_names
@@ -634,6 +666,7 @@ elif phase == 3:
             run_pca_diagnostic(df)
         diag = st.session_state.get("pca_diag")
         if diag:
+            import plotly.express as px
             c1, c2 = st.columns([1, 2.4])
             c1.metric("Components for ≥95% variance", diag["components"])
             fig = px.line(x=np.arange(1, len(diag["cum"]) + 1), y=diag["cum"] * 100, labels={"x": "Principal component", "y": "Cumulative explained variance (%)"}, title="PCA cumulative explained variance")
@@ -652,6 +685,7 @@ elif phase == 4:
         if st.button("Run validation + imbalance + tuning", type="primary", width="stretch", icon=":material/model_training:", disabled=st.session_state.busy):
             run_phase5_validation()
     else:
+        import plotly.express as px
         cvdf = st.session_state.cv_bundle["cv_results"].sort_values("PR-AUC", ascending=False)
         st.success("All three candidates completed validation, imbalance analysis and tuning.")
         st.dataframe(cvdf.round(4), width="stretch", hide_index=True)
@@ -674,8 +708,8 @@ elif phase == 4:
         for name, info in bundle["models"].items():
             tune_rows.append({
                 "Model": name,
-                "Best search PR-AUC": info.get("best_search_pr_auc", np.nan),
-                "Search duration (sec)": info.get("tuning_duration_seconds", np.nan),
+                "Best search PR-AUC": info.get("best_search_pr_auc", float("nan")),
+                "Search duration (sec)": info.get("tuning_duration_seconds", float("nan")),
                 "Best parameters": json.dumps(info.get("params", {}), default=str),
             })
         st.dataframe(pd.DataFrame(tune_rows), width="stretch", hide_index=True)
@@ -686,6 +720,7 @@ elif phase == 4:
 # Phase 06
 # -----------------------------------------------------------------------------
 elif phase == 5:
+    import numpy as np
     st.markdown("## 06 · Threshold, Evaluation & Explainability")
     bundle = st.session_state.training_bundle
     final = st.session_state.final_bundle
@@ -797,6 +832,7 @@ elif phase == 5:
 # Phase 07
 # -----------------------------------------------------------------------------
 elif phase == 6:
+    import plotly.express as px
     st.markdown("## 07 · Model Release & User Access")
     final = st.session_state.final_bundle
     cv = st.session_state.cv_bundle
@@ -859,7 +895,14 @@ elif phase == 6:
             c3.metric("Threshold", f"{rec.threshold:.1%}")
             st.caption(f"Users do not select a model; this administrator-selected model is used automatically. Version: {rec.version}")
         st.markdown("### Finish")
+        st.info("This training run is saved. Finishing returns you to the dashboard with the Training Studio reset, ready to create a new project.")
         if st.button("Finish and open Admin Dashboard", type="primary", width="stretch", icon=":material/dashboard:", disabled=st.session_state.busy):
+            # Persisted project/model artifacts remain on disk. Only the transient
+            # Training Studio workflow is cleared so the next visit starts fresh.
+            clear_training_state(keep_dataset=False)
+            store.select_project(None)
+            add_log("Training run finished. Training Studio reset for the next project.")
+            st.session_state.navigation_notice = "Training Studio reset · ready for a new project"
             st.switch_page("pages/home.py")
 
 bottom_navigation()

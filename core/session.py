@@ -32,6 +32,9 @@ def init_app_state() -> None:
         "bulk_scored": None,
         "bulk_model_version": None,
         "bulk_source_name": None,
+        "bulk_owner_username": None,
+        "bulk_owner_role": None,
+        "bulk_owner_project_id": None,
         "quick_result": None,
         "last_run_id": None,
         "phase4_complete": False,
@@ -55,6 +58,7 @@ def clear_training_state(keep_dataset: bool = True) -> None:
     for key in [
         "training_bundle", "cv_bundle", "imbalance_df", "threshold_bundle", "final_bundle", "tuning_bundle",
         "xai_bundle", "analysis_cache", "quick_result", "bulk_scored", "bulk_model_version", "bulk_source_name",
+        "bulk_owner_username", "bulk_owner_role", "bulk_owner_project_id",
     ]:
         st.session_state[key] = {} if key == "xai_bundle" else None
     st.session_state.completed_phases = set()
@@ -88,3 +92,18 @@ def set_busy(label: str) -> None:
 def clear_busy() -> None:
     st.session_state.busy = False
     st.session_state.busy_label = ""
+
+
+def reset_session_for_logout() -> None:
+    """Clear all Streamlit session state at the authentication boundary.
+
+    Persistent projects, datasets, model artifacts and release metadata live on
+    disk and are intentionally preserved. All transient UI, prediction, training,
+    and role-specific state is removed so a later login starts with a clean session.
+    """
+    # Snapshot keys because the mapping is modified during iteration.
+    for key in list(st.session_state.keys()):
+        try:
+            del st.session_state[key]
+        except KeyError:
+            pass

@@ -50,15 +50,15 @@ def render_brand(large: bool = False) -> None:
 
 
 def render_sidebar_status(role: str, display_name: str, store: Any) -> None:
-    """Compact authenticated sidebar context; detailed context lives on dashboards."""
+    """Compact authenticated sidebar context without loading model artifacts/metadata."""
     st.caption(display_name)
     st.markdown(f"<span class='cr-pill'>{html.escape(role.upper())}</span>", unsafe_allow_html=True)
     active_project = getattr(store, "active_project", None)
-    published = store.user_models()
-    if active_project and published:
-        st.caption(f"Active: {active_project.name} · Default: {store.active_model_name}")
+    if active_project and getattr(active_project, "recommended_version", None):
+        model_name = getattr(active_project, "recommended_model_name", None) or "Final model configured"
+        st.caption(f"Active: {active_project.name} · {model_name}")
     elif active_project:
-        st.caption(f"Active: {active_project.name} · No published models")
+        st.caption(f"Active: {active_project.name} · No final model")
     else:
         st.caption("No User-facing project")
 

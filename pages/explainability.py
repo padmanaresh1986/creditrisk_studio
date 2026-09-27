@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import pandas as pd
-import plotly.express as px
 import streamlit as st
 
 from components.ui import empty_state, section_header
-from core.ml_runtime import load_model, load_model_context
 from core.state import get_store
 
 store = get_store()
@@ -14,17 +11,23 @@ if not store.has_models:
     empty_state("Explainability is empty", "Feature importance is available only after models have been trained.", "Training Studio → Preprocessing & Model Lab")
     st.stop()
 
-records = list(store.models.values())
-names = sorted({r.model_name for r in records})
+records = store.trained_models_for_project(store.current_project_id)
+names = sorted({r.model_name for r in records if r.final_metrics or r.artifact_path})
+if not names:
+    empty_state("No trained models", "Train a model in the current project before opening explainability.", "Training Studio → Preprocessing & Model Lab")
+    st.stop()
+
 selected = st.selectbox("Model", names)
 rec = next(r for r in records if r.model_name == selected)
 
 with st.spinner("Loading model explanation data…"):
+    from core.ml_runtime import load_model, load_model_context, cached_global_feature_importance
+    import pandas as pd
+    import plotly.express as px
     model = load_model(rec.version)
     ctx = load_model_context(rec.version)
-    from ml.explainability import clean_display_feature, feature_definition, global_feature_importance, permutation_importance_frame
-    fi = global_feature_importance(model).head(25).copy()
-    fi["Display Feature"] = fi["Feature"].map(clean_display_feature)
+    from ml.explainability import clean_display_feature, feature_definition, permutation_importance_frame
+    fi = cached_global_feature_importance(rec.version).copy()
 
 st.plotly_chart(px.bar(fi.sort_values("Importance"), x="Importance", y="Display Feature", orientation="h", title="Top model feature importance"), width="stretch")
 st.dataframe(fi[["Display Feature", "Importance"]], width="stretch", hide_index=True)

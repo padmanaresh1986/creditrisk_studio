@@ -45,6 +45,19 @@ CATEGORICAL_FEATURES_FINAL: Final[list[str]] = (
     + CALENDAR_CATEGORICAL_FEATURES
 )
 
+RAW_REQUIRED_COLUMNS: Final[list[str]] = [
+    "Client_Income", "Car_Owned", "Bike_Owned", "Active_Loan", "House_Own",
+    "Child_Count", "Credit_Amount", "Loan_Annuity", "Accompany_Client",
+    "Client_Income_Type", "Client_Education", "Client_Marital_Status", "Client_Gender",
+    "Loan_Contract_Type", "Client_Housing_Type", "Population_Region_Relative",
+    "Age_Days", "Employed_Days", "Registration_Days", "ID_Days", "Own_House_Age",
+    "Homephone_Tag", "Workphone_Working", "Client_Occupation", "Client_Family_Members",
+    "Cleint_City_Rating", "Application_Process_Day", "Application_Process_Hour",
+    "Client_Permanent_Match_Tag", "Client_Contact_Work_Tag", "Type_Organization",
+    "Score_Source_1", "Score_Source_2", "Score_Source_3", "Social_Circle_Default",
+    "Phone_Change", "Credit_Bureau",
+]
+
 NUMERIC_AS_TEXT_FEATURES: Final[list[str]] = [
     "Client_Income",
     "Loan_Annuity",

@@ -87,8 +87,10 @@ def test_model_records_persist_and_reload_with_relative_paths():
             "version": "m1", "artifact_path": str(artifact), "context_path": str(context),
         })
         reloaded = AppStore(manager=manager)
-        assert "m1" in reloaded.models
-        assert reloaded.models["m1"].artifact_path == str(artifact.resolve())
+        assert "m1" not in reloaded.models  # model metadata is lazy at startup
+        loaded = reloaded.get_model("m1")
+        assert loaded is not None
+        assert loaded.artifact_path == str(artifact.resolve())
     finally:
         td.cleanup()
 
@@ -131,3 +133,46 @@ def test_training_engine_accepts_selected_model_names():
     params=inspect.signature(train_candidates).parameters
     assert "model_names" in params
     assert params["model_names"].default is None
+
+
+def test_store_hydrates_only_requested_project_models():
+    td, manager, store, project = make_store()
+    try:
+        # Create a second project with one model record.
+        project2 = manager.create_project("Second Project", "train2.csv", "dict2.csv", pd.DataFrame({"Default": [0, 1]}))
+        for pid, version in [(project.project_id, "p1m"), (project2.project_id, "p2m")]:
+            artifact = Path(manager.get_project(pid).root_path) / "models" / "releases" / f"{version}.joblib"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_bytes(b"x")
+            context = artifact.with_suffix(".json")
+            context.write_text("{}", encoding="utf-8")
+            manager.save_model_index(pid, [{
+                "model_id": version, "model_name": "Random Forest", "family": "test",
+                "version": version, "project_id": pid, "project_name": manager.get_project(pid).name,
+                "final_metrics": {"PR-AUC": 0.1}, "artifact_path": str(artifact), "context_path": str(context),
+            }])
+        fast_store = AppStore(manager=manager)
+        assert fast_store.models == {}
+        fast_store.select_project(project.project_id)
+        assert fast_store.get_model("p1m") is not None
+        assert fast_store.get_model("p2m") is not None
+    finally:
+        td.cleanup()
+
+
+def test_training_studio_tuning_fallback_does_not_depend_on_np_alias():
+    source = (ROOT / "pages" / "training_studio.py").read_text(encoding="utf-8")
+    assert 'info.get("best_search_pr_auc", np.nan)' not in source
+    assert 'info.get("tuning_duration_seconds", np.nan)' not in source
+    assert 'info.get("best_search_pr_auc", float("nan"))' in source
+    assert 'info.get("tuning_duration_seconds", float("nan"))' in source
+
+
+def test_finish_button_resets_training_studio_state_before_dashboard_navigation():
+    source = (ROOT / "pages" / "training_studio.py").read_text(encoding="utf-8")
+    marker = 'Finish and open Admin Dashboard'
+    idx = source.index(marker)
+    block = source[idx: idx + 1200]
+    assert 'clear_training_state(keep_dataset=False)' in block
+    assert 'store.select_project(None)' in block
+    assert 'st.switch_page("pages/home.py")' in block

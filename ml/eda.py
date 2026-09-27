@@ -2,11 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from scipy.stats import chi2_contingency
-from sklearn.feature_selection import mutual_info_classif
 
 from .feature_engineering import clean_raw_dataframe, engineer_features
 from .schema import (
@@ -37,13 +32,17 @@ def missingness_table(df):
 
 
 def missingness_figure(df):
+    import plotly.express as px
     miss = missingness_table(df).head(15).reset_index().rename(columns={"index": "Feature"})
     return px.bar(miss.sort_values("Missing_Percentage"), x="Missing_Percentage", y="Feature", orientation="h",
                   title="Top Features by Missing Value Percentage", labels={"Missing_Percentage": "Missing Values (%)"})
 
 
-def numeric_histogram(df):
-    clean = cleaned_engineered(df)
+def numeric_histogram(df=None, clean=None):
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    if clean is None:
+        clean = cleaned_engineered(df)
     selected = [c for c in [
         "Client_Income", "Credit_Amount", "Loan_Annuity", "Age_Years", "Employment_Years",
         "Score_Source_1", "Score_Source_2", "Score_Source_3", "Credit_Bureau", "Social_Circle_Default"
@@ -57,8 +56,11 @@ def numeric_histogram(df):
     return fig
 
 
-def boxplot_figure(df):
-    clean = cleaned_engineered(df)
+def boxplot_figure(df=None, clean=None):
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    if clean is None:
+        clean = cleaned_engineered(df)
     selected = [c for c in ["Client_Income", "Credit_Amount", "Loan_Annuity", "Age_Years", "Employment_Years"] if c in clean.columns]
     fig = make_subplots(rows=len(selected), cols=1, shared_xaxes=False, subplot_titles=[f"Boxplot: {c}" for c in selected])
     for i, col in enumerate(selected, start=1):
@@ -67,16 +69,20 @@ def boxplot_figure(df):
     return fig
 
 
-def categorical_default_rate(df, col):
-    clean = cleaned_engineered(df)
+def categorical_default_rate(df=None, col=None, clean=None):
+    import plotly.express as px
+    if clean is None:
+        clean = cleaned_engineered(df)
     rate = clean.groupby(col, dropna=False)[TARGET].mean().mul(100).sort_values(ascending=False).reset_index(name="Default Rate (%)")
     rate[col] = rate[col].fillna("Missing").astype(str)
     return px.bar(rate.sort_values("Default Rate (%)"), x="Default Rate (%)", y=col, orientation="h",
                   title=f"Default Rate by {col}", text_auto=".1f")
 
 
-def missingness_vs_default(df):
-    clean = cleaned_engineered(df)
+def missingness_vs_default(df=None, clean=None):
+    import plotly.express as px
+    if clean is None:
+        clean = cleaned_engineered(df)
     rows=[]
     for c in ["Score_Source_1", "Score_Source_3", "Client_Occupation", "Credit_Bureau", "Social_Circle_Default"]:
         if c not in clean.columns: continue
@@ -86,8 +92,10 @@ def missingness_vs_default(df):
                   title="Default Rate by Missingness Status")
 
 
-def correlation_figure(df):
-    clean = cleaned_engineered(df)
+def correlation_figure(df=None, clean=None):
+    import plotly.express as px
+    if clean is None:
+        clean = cleaned_engineered(df)
     numeric = clean.select_dtypes(include=np.number).drop(columns=[TARGET, "ID"], errors="ignore")
     corr = numeric.corr(method="spearman")
     fig = px.imshow(corr, text_auto=False, aspect="auto", color_continuous_scale="RdBu_r", zmin=-1, zmax=1,
@@ -96,8 +104,11 @@ def correlation_figure(df):
     return fig, corr
 
 
-def feature_selection_tables(df):
-    clean = cleaned_engineered(df)
+def feature_selection_tables(df=None, clean=None):
+    from scipy.stats import chi2_contingency
+    from sklearn.feature_selection import mutual_info_classif
+    if clean is None:
+        clean = cleaned_engineered(df)
     categorical = [c for c in (BINARY_CATEGORICAL_FEATURES + NOMINAL_CATEGORICAL_FEATURES + ORDINAL_CATEGORICAL_FEATURES) if c in clean.columns]
     chi_rows=[]
     for col in categorical:

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-import pandas as pd
-import plotly.express as px
 import streamlit as st
 
 from components.ui import empty_state, section_header
@@ -17,8 +14,7 @@ section_header("ADMIN WORKSPACE", "Admin Dashboard", "Manage saved training proj
 projects = manager.list_projects()
 if projects:
     active_project = manager.active_project()
-    published = store.user_models()
-    default_name = store.active_model_name if published else "—"
+    default_name = (getattr(active_project, "recommended_model_name", None) or "Configured") if active_project else "—"
     with st.container(border=True):
         ctx1, ctx2, ctx3 = st.columns(3)
         ctx1.metric("Administrator", "ADMIN")
@@ -38,7 +34,9 @@ if not projects:
 # Project library
 st.markdown("### Project library")
 proj_rows = manager.project_summary()
-st.dataframe(pd.DataFrame(proj_rows).drop(columns=["Project ID"]), width="stretch", hide_index=True)
+if proj_rows:
+    import pandas as pd
+    st.dataframe(pd.DataFrame(proj_rows).drop(columns=["Project ID"]), width="stretch", hide_index=True)
 
 options = {f"{p.name} · {p.status} · {p.project_id}": p.project_id for p in projects}
 current_id = store.current_project_id or store.active_project_id
@@ -50,10 +48,12 @@ selected_project = manager.get_project(selected_project_id)
 assert selected_project is not None
 store.select_project(selected_project_id)
 
-project_models = [r for r in store.models.values() if r.project_id == selected_project_id and r.is_trained]
+store.select_project(selected_project_id)
+project_models = store.trained_models_for_project(selected_project_id)
 if project_models:
     final_models = [r for r in project_models if r.final_metrics]
     st.markdown("### Selected project")
+    import pandas as pd
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Rows", f"{selected_project.rows:,}")
     c2.metric("Default rate", f"{selected_project.default_rate:.2%}")

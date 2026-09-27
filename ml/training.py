@@ -49,6 +49,27 @@ def _series_default(series: pd.Series):
     return mode.iloc[0] if len(mode) else None
 
 
+def _build_input_profile(df: pd.DataFrame) -> dict[str, Any]:
+    """Precompute lightweight prediction-form metadata so User pages do not re-read CSVs."""
+    from .feature_engineering import raw_required_columns
+    from .schema import CATEGORICAL_FEATURES_FINAL
+    profile = {"columns": {}}
+    for col in raw_required_columns():
+        if col not in df.columns:
+            continue
+        series = df[col]
+        if col in CATEGORICAL_FEATURES_FINAL:
+            vals = [v for v in pd.unique(series.dropna())][:100]
+            profile["columns"][col] = {"kind": "categorical", "options": vals}
+        else:
+            numeric = pd.to_numeric(series, errors="coerce")
+            info = {"kind": "numeric"}
+            if numeric.notna().any():
+                info.update({"min": float(numeric.min()), "max": float(numeric.max()), "median": float(numeric.median())})
+            profile["columns"][col] = info
+    return profile
+
+
 def build_context(df: pd.DataFrame, feature_columns: list[str], base_rate: float, dictionary: dict[str, str]) -> dict[str, Any]:
     cleaned = clean_raw_dataframe(df, drop_constant=True)
     raw = cleaned.drop(columns=[TARGET, "ID"], errors="ignore")
@@ -60,6 +81,7 @@ def build_context(df: pd.DataFrame, feature_columns: list[str], base_rate: float
         "dictionary": dictionary,
         "raw_input_columns": raw.columns.tolist(),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "input_profile": _build_input_profile(df),
     }
 
 
@@ -100,6 +122,9 @@ def train_candidates(df: pd.DataFrame, dictionary: dict[str, str], log=None, pro
     if not names:
         raise ValueError("Select at least one supported model to train.")
     total_models = len(names)
+    # Compute project-level prediction metadata once. Previously this cleaned the full
+    # training dataframe and rebuilt the input profile once per candidate model.
+    base_context = build_context(df, X_train.columns.tolist(), float(y_train.mean()), dictionary)
     log(f"Prepared {X_train.shape[1]} model features from {len(df):,} labelled rows.")
     log(f"Training partition: {len(X_train):,} rows; holdout partition: {len(X_test):,} rows.")
     log(f"Holdout target rate is {y_test.mean():.2%}. The holdout will not be used for tuning or threshold selection.")
@@ -113,7 +138,7 @@ def train_candidates(df: pd.DataFrame, dictionary: dict[str, str], log=None, pro
         version = f"candidate-{_safe_version(name)}-{started.strftime('%Y%m%d%H%M%S%f')}-{uuid4().hex[:6]}"
         model_path = candidates_dir / f"{version}.joblib"
         joblib.dump(pipeline, model_path)
-        context = build_context(df, X_train.columns.tolist(), float(y_train.mean()), dictionary)
+        context = dict(base_context)
         context["model_name"] = name
         context["version"] = version
         context["project_id"] = project_id

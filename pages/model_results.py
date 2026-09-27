@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 from components.ui import empty_state, section_header
@@ -10,14 +7,19 @@ from core.state import get_store
 
 store = get_store()
 section_header("ADMIN WORKSPACE", "Model Results", "Review holdout evidence for the administrator-selected final prediction model.")
+
 if not store.has_models:
     empty_state("No model results yet", "Results will appear after candidate training and validation have been completed.", "Training Studio → run the workflow")
     st.stop()
 
-records = [r for r in store.models.values() if r.is_published]
+records = store.user_models()
 if not records:
     empty_state("No final model results yet", "Model Results is populated only after the administrator completes final evaluation and sets the final prediction model.", "Training Studio → complete Model Release & User Access")
     st.stop()
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 portfolio = pd.DataFrame([
     {
@@ -60,7 +62,6 @@ with st.container(border=True):
     with st.expander("Model parameters", expanded=False):
         st.json(rec.params, expanded=False)
 
-# Detailed final evaluation is available after Phase 06.
 final_bundle = st.session_state.get("final_bundle") or {}
 if selected_name in final_bundle:
     out = final_bundle[selected_name]
@@ -72,17 +73,13 @@ if selected_name in final_bundle:
     with c1:
         st.plotly_chart(px.imshow(cm_df, text_auto=True, aspect="auto", title=f"Confusion matrix @ {out['threshold']:.1%}"), width="stretch")
     with c2:
-        from sklearn.metrics import roc_curve
+        from sklearn.metrics import roc_curve, precision_recall_curve, auc
         fpr, tpr, _ = roc_curve(out["test_y"], out["probabilities"])
         fig = go.Figure(go.Scatter(x=fpr, y=tpr, mode="lines", name="Model"))
-        fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random baseline", line={"dash": "dash"}))
+        fig.add_trace(go.Scatter(x=[0,1], y=[0,1], mode="lines", name="Random baseline", line={"dash":"dash"}))
         fig.update_layout(title="ROC curve", xaxis_title="False positive rate", yaxis_title="True positive rate")
         st.plotly_chart(fig, width="stretch")
-    from sklearn.metrics import precision_recall_curve
-    precision, recall, _ = precision_recall_curve(out["test_y"], out["probabilities"])
-    st.plotly_chart(px.line(x=recall, y=precision, labels={"x": "Recall", "y": "Precision"}, title="Precision-Recall curve"), width="stretch")
-else:
-    st.info("Holdout metrics and curves will appear after Phase 06 final evaluation.")
-
-with st.expander("How to read these results", expanded=False):
-    st.write("PR-AUC and ROC-AUC are ranking metrics and do not depend on the displayed classification threshold. Precision, Recall and F1 change when the operating threshold changes. Holdout metrics are shown only after the candidate configuration and threshold have been finalised.")
+    p, r, _ = precision_recall_curve(out["test_y"], out["probabilities"])
+    fig = go.Figure(go.Scatter(x=r, y=p, mode="lines", name="Model"))
+    fig.update_layout(title="Precision-Recall curve", xaxis_title="Recall", yaxis_title="Precision")
+    st.plotly_chart(fig, width="stretch")

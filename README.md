@@ -1,5 +1,7 @@
 # CreditRisk Studio
 
+Current release: **v6.8 Performance Pass**.
+
 CreditRisk Studio is a Streamlit-only academic automobile-loan default analytics product. It provides an end-to-end workflow for dataset intake, exploratory analysis, feature engineering, model development, validation, threshold selection, explainability, model release, and interactive prediction.
 
 The application is intentionally self-contained for an academic/local deployment: interactive workflow state is kept in Streamlit session state, while trained projects, source datasets, model artifacts, analysis outputs and run logs are persisted locally under the `projects/` directory. An in-process registry/cache is hydrated from that local project library at startup. There is no FastAPI service, database, Redis queue, MLflow server, or external object store in this build.
@@ -10,13 +12,22 @@ Prediction, bulk-scoring, training, and application lifecycle events are logged 
 
 For a quick prediction failure, expand **Prediction console** after the attempt. For a bulk failure, expand **Bulk prediction console**. Long-running training activity remains in **Processing console**.
 
+
+## Session isolation and logout
+
+Logout is treated as an authentication boundary. The application clears the entire Streamlit session state before rerunning the unauthenticated login route. This removes Quick Prediction results, Bulk Prediction results, processing logs, workflow state, selections and other transient role-specific data. Persistent Projects, datasets, model artifacts and release metadata remain on disk and are not deleted by logout.
+
+The application also delays creation of the filesystem-backed model/project registry until after authentication. The unauthenticated login path therefore does not hydrate project/model metadata unnecessarily, which keeps logout and subsequent login transitions lightweight.
+
+Prediction pages apply an additional owner/role/project guard before rendering cached session results, so a stale prediction object cannot be displayed under a different authenticated context even if it somehow remains in session state.
+
 ## Product goals
 
 - Keep the application empty at startup: no preloaded dataset, model, metrics, or predictions.
 - Make model training explicit and observable.
 - Process the candidate models through the same governed workflow.
 - Let an administrator review evidence before releasing models.
-- Let users choose from released models while presenting an administrator-designated default.
+- Use one administrator-selected final model for User prediction within the active project.
 - Keep prediction explanations tied to actual model evidence and data-dictionary definitions.
 - Keep the UI clean while making analytical detail available through collapsed sections.
 
@@ -505,6 +516,10 @@ Publishing synchronizes candidate artifacts into the project registry, verifies 
 
 Project metadata, source datasets, model artifacts, analysis CSVs and run logs are persisted under `projects/` and reloaded when Streamlit restarts. Interactive workflow state such as the current phase and unsaved page controls remains session-local by design. The local project library is suitable for the academic application but is not an enterprise multi-user registry.
 
+## Runtime alias safety
+
+Visualization and numerical aliases used by page renderers are imported at module scope for the page that owns them. This avoids failures where a conditional/lazy import is skipped but a later chart still references the alias. The affected pages include Training Studio (`px`), Bulk Prediction (`px`), and Quick Prediction (`np`).
+
 ## Troubleshooting
 
 ### `python` shows the wrong Python version after activation
@@ -606,7 +621,7 @@ sequenceDiagram
 ```
 
 
-## v6.6 workflow and release behavior
+## Current workflow and release behavior
 
 - Model Lab supports training **one, two, or all three** model families.
 - The selected subset is carried through tuning, 5-fold validation, class-imbalance analysis, out-of-fold threshold selection, holdout evaluation, and explainability.
@@ -636,3 +651,79 @@ flowchart TB
 Quick Prediction and Bulk Prediction each expose a collapsed terminal-style console for the most recent attempt. Entries are tagged `DEBUG`, `INFO`, `WARNING`, or `ERROR`. On exceptions, the UI receives a concise error summary and the Streamlit server terminal receives the full Python traceback for development diagnostics.
 
 The raw-input SHAP aggregation API is called with keyword arguments to prevent dictionary/supplied-field argument-order errors. It also contains a compatibility guard for older positional callers.
+
+
+## Performance and execution model
+
+The application is designed for fast page navigation without sacrificing the analytical workflow.
+
+- Application startup loads only authentication, lightweight project metadata and the Streamlit shell. It does not train models, load model artifacts, scan run history, import SHAP, or import XGBoost eagerly.
+- ML artifacts are loaded lazily and cached with `st.cache_resource`.
+- Uploaded data and expensive analysis calculations are cached with `st.cache_data`.
+- Training runs, validation, tuning, threshold optimisation and permutation importance execute only when the administrator explicitly starts them.
+- Run history is hydrated lazily when the Run History page is opened rather than during application startup.
+- EDA cleaning/feature engineering is performed once per cached EDA calculation instead of repeating the same transformations for every chart.
+- Mutual information and chi-square analysis are deferred until the administrator requests the statistical feature-selection view.
+- Long-running actions remain synchronous by design in this Streamlit-only academic architecture so shared session state is not mutated concurrently. Progress, status and terminal-style logs provide visible feedback while an operation is running.
+
+### Performance flow
+
+```mermaid
+flowchart TD
+    A[Start Streamlit] --> B[Load lightweight shell]
+    B --> C[Authenticate]
+    C --> D{Requested page}
+    D -->|Dashboard| E[Read cached project metadata]
+    D -->|Prediction| F[Load model/context lazily]
+    D -->|Training Studio| G[Load only phase-required modules]
+    F --> H[Cache model resource]
+    G --> I[Run expensive analysis only on demand]
+    I --> J[Cache analysis results]
+    J --> K[Render page]
+    E --> K
+    H --> K
+```
+
+
+## Performance architecture
+
+The application is optimized around lazy loading rather than background threads for ordinary navigation. The AppStore hydrates only lightweight project metadata at startup and loads model indexes for the selected project on demand; prediction-form metadata is embedded in model context at training time so User navigation does not reread the source CSV. The project registry keeps an mtime-aware cache, model indexes are hydrated only for the project a page actually needs, training runs are loaded only on Run History, and prediction-form metadata is embedded in trained model context so Quick Prediction does not repeatedly scan the source CSV. Expensive model training, tuning and permutation/SHAP analysis remains explicit and user-triggered. See `PERFORMANCE_V6_10.md`.
+
+### Page-load sequence
+
+```mermaid
+flowchart LR
+    A[App start] --> B[Authentication shell]
+    B --> C[Login]
+    C --> D[Lightweight project metadata]
+    D --> E[Requested page]
+    E --> F[Lazy project/model resource]
+    F --> G[Cached data/resource]
+```
+
+## Training Studio lifecycle
+
+A completed training run is treated as a saved project, not as the next active
+Training Studio workspace. When the administrator uses **Finish and open Admin
+Dashboard** after model release, the application clears only the transient
+training workflow state and leaves the project, source data, model artifacts,
+metrics, and run history persisted on disk. Returning to Training Studio then
+starts from **01 · Data Setup** so a new project can be created without
+accidentally reusing the previous run.
+
+The saved project remains available through the project/model administration
+areas; finishing a run never deletes its artifacts.
+
+## Tuning diagnostics
+
+The Training Studio tuning-results table uses Python's built-in `float("nan")`
+for missing numeric values rather than depending on a page-level NumPy alias.
+This keeps the presentation layer robust when lazy imports are used.
+
+## Lazy-import safety
+
+Performance optimizations use lazy imports, but each Streamlit page declares every plotting alias it uses at page scope. In particular, pages that use Plotly Express declare `plotly.express as px`, and pages that use Plotly Graph Objects declare `plotly.graph_objects as go`. This keeps page startup lazy without creating order-dependent `NameError` failures after workflow navigation.
+
+### Page-scope import rule
+
+Pages that use a dataframe/library alias after an action or conditional branch must declare that alias at page scope. This avoids runtime `NameError` failures caused by lazy imports being scoped inside a helper function. Expensive ML packages can still be imported lazily inside the specific operation that needs them.

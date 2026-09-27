@@ -34,17 +34,16 @@ def _load_json(path: str):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def model_record(version: str):
-    from core.state import get_store
-    rec = get_store().models.get(version)
-    if rec is None:
-        raise KeyError(f"Model version '{version}' is not available.")
-    return rec
+from core.model_catalog import available_user_models, load_model_context, model_record, prediction_input_profile
 
 
-def available_user_models():
-    from core.state import get_store
-    return get_store().user_models()
+@st.cache_data(show_spinner=False)
+def cached_global_feature_importance(version: str):
+    from ml.explainability import global_feature_importance, clean_display_feature
+    model = load_model(version)
+    frame = global_feature_importance(model).head(25).copy()
+    frame["Display Feature"] = frame["Feature"].map(clean_display_feature)
+    return frame
 
 
 def load_model(version: str):
@@ -52,59 +51,6 @@ def load_model(version: str):
     if not rec.artifact_path or not Path(rec.artifact_path).exists():
         raise FileNotFoundError("The selected model artifact is not available in this Streamlit process.")
     return _load_joblib(rec.artifact_path)
-
-
-def load_model_context(version: str):
-    rec = model_record(version)
-    if not rec.context_path or not Path(rec.context_path).exists():
-        raise FileNotFoundError("The selected model context is not available.")
-    return _load_json(rec.context_path)
-
-
-def dictionary_map(version: str) -> dict[str, str]:
-    ctx = load_model_context(version)
-    return dict(ctx.get("dictionary", {}))
-
-
-
-@st.cache_data(show_spinner=False)
-def _load_training_profile(project_root: str, dataset_filename: str) -> dict[str, Any]:
-    """Load lightweight input metadata from the dataset saved with a project."""
-    path = Path(project_root) / "data" / dataset_filename
-    if not path.exists():
-        return {"columns": {}, "source": "model-context-defaults"}
-    df = pd.read_csv(path, low_memory=False)
-    profile: dict[str, Any] = {"columns": {}, "source": str(path)}
-    for col in raw_required_columns():
-        if col not in df.columns:
-            continue
-        series = df[col]
-        info: dict[str, Any] = {}
-        if col in CATEGORICAL_FEATURES_FINAL:
-            vals = [v for v in pd.unique(series.dropna())]
-            # Keep native scalar types so OneHotEncoder sees the same semantic type.
-            info["kind"] = "categorical"
-            info["options"] = vals[:100]
-        else:
-            num = pd.to_numeric(series, errors="coerce")
-            info["kind"] = "numeric"
-            if num.notna().any():
-                info["min"] = float(num.min())
-                info["max"] = float(num.max())
-                info["median"] = float(num.median())
-        profile["columns"][col] = info
-    return profile
-
-
-def prediction_input_profile(version: str) -> dict[str, Any]:
-    """Return cached UI metadata for the selected released model/project."""
-    rec = model_record(version)
-    ctx = load_model_context(version)
-    from core.projects import get_project_manager
-    project = get_project_manager().get_project(rec.project_id)
-    root = project.root_path if project else ""
-    filename = project.dataset_filename if project else ctx.get("dataset_filename", "")
-    return _load_training_profile(root, filename)
 
 
 def _validate_optional_score(label: str, value: Any) -> None:

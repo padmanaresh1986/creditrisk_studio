@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
 from components.ui import empty_state, section_header
@@ -17,6 +16,7 @@ if not projects:
     st.stop()
 
 st.markdown("### Saved projects")
+import pandas as pd
 proj_df = pd.DataFrame(manager.project_summary())
 st.dataframe(proj_df, width="stretch", hide_index=True)
 
@@ -27,8 +27,10 @@ selected_id = next(p.project_id for p in projects if f"{p.name} · {p.status} ·
 selected = manager.get_project(selected_id)
 assert selected is not None
 
+import pandas as pd
 rows=[]
-for rec in [r for r in store.models.values() if r.project_id == selected_id and r.is_trained]:
+store.select_project(selected_id)
+for rec in store.trained_models_for_project(selected_id):
     rows.append({
         "Model": rec.model_name, "Version": rec.version, "Status": rec.status,
         "CV PR-AUC": rec.cv_metrics.get("PR-AUC", float("nan")),

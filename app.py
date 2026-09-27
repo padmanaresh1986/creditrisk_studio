@@ -22,10 +22,6 @@ st.set_page_config(
 )
 inject_global_css()
 init_app_state()
-store = get_store()
-if not st.session_state.get("app_log_initialized"):
-    emit_log("Application session initialized", "DEBUG", "app")
-    st.session_state.app_log_initialized = True
 
 
 def login_screen() -> None:
@@ -92,10 +88,20 @@ if not is_authenticated():
     st.stop()
 
 user = current_user()
-render_sidebar_status(user["role"], user["display_name"], store)
+# Hydrate the lightweight filesystem-backed registry only after authentication.
+# This is deliberately not wrapped in a spinner: registry hydration is lightweight
+# and a full-page spinner made normal navigation feel slower than it was.
+store = get_store()
+if not st.session_state.get("app_log_initialized"):
+    emit_log("Authenticated application session initialized", "DEBUG", "app")
+    st.session_state.app_log_initialized = True
+
 if st.sidebar.button("Sign out", icon=":material/logout:"):
+    emit_log(f"Sign-out requested | user={user.get('username', '')!r}", "INFO", "auth")
     logout()
     st.rerun()
+
+render_sidebar_status(user["role"], user["display_name"], store)
 
 pages = build_authenticated_navigation(user["role"])
 pg = st.navigation(pages, position="sidebar", expanded=True)

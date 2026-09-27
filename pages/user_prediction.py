@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 from typing import Any
+import math
 
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 from core.logging_utils import emit_exception, emit_log, render_console
 
 from components.ui import empty_state, risk_meter, section_header
-from core.ml_runtime import available_user_models, load_model, load_model_context, local_explanation, prediction_input_profile, prepare_quick_applicant
+from core.model_catalog import available_user_models, load_model_context, prediction_input_profile
 from core.state import get_store
 from ml.explainability import aggregate_input_contributions, feature_definition, risk_band
 
 store = get_store()
+current_session_user = st.session_state.get("auth_user") or {}
+current_session_username = str(current_session_user.get("username", ""))
 active_project = store.active_project
 project_text = f"Active project: {active_project.name}. " if active_project else ""
 section_header(
@@ -76,7 +76,7 @@ def _numeric_widget(field: str, label: str, default: float | None, step: float, 
         kwargs["value"] = None
         kwargs["placeholder"] = "Leave blank to use training default"
     else:
-        d = float(default if default is not None and np.isfinite(default) else lo)
+        d = float(default if default is not None and math.isfinite(default) else lo)
         d = min(max(d, lo), hi)
         kwargs["value"] = d
     return st.number_input(label, **kwargs)
@@ -270,6 +270,7 @@ if submitted:
         "prediction",
     )
     try:
+        from core.ml_runtime import load_model, local_explanation, prepare_quick_applicant
         inputs = {"raw_overrides": raw_overrides}
         with st.status(f"Assessing with {selected.model_name}…", expanded=True) as status:
             status.write("Validating the supplied application fields.")
@@ -300,6 +301,9 @@ if submitted:
             )
             emit_log(f"Raw-input contribution mapping complete | rows={len(raw_contrib)}", "DEBUG", "prediction")
             result = {
+                "owner_username": current_session_username,
+                "owner_role": str(current_session_user.get("role", "")),
+                "project_id": selected.project_id,
                 "model_name": selected.model_name,
                 "version": selected.version,
                 "probability": probability,
@@ -328,7 +332,20 @@ if submitted:
 render_console("prediction", expanded=False)
 
 result = st.session_state.get("quick_result")
+if result and (
+    result.get("owner_username") != current_session_username
+    or result.get("owner_role") != str(current_session_user.get("role", ""))
+    or result.get("project_id") != selected.project_id
+    or result.get("version") != selected.version
+):
+    # Defense-in-depth: stale result from another authenticated context must never render.
+    st.session_state.quick_result = None
+    result = None
+
 if result and result.get("version") == selected.version:
+    import numpy as np
+    import pandas as pd
+    import plotly.graph_objects as go
     st.markdown("---")
     with st.container(border=True):
         st.markdown("## Default Risk Assessment")

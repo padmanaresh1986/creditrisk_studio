@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
-import plotly.express as px
 
 try:
     import streamlit as st
@@ -13,12 +11,24 @@ except ImportError:  # pragma: no cover
             return lambda fn: fn
     st = _Stub()
 
-from ml.eda import target_distribution, missingness_table, numeric_histogram, boxplot_figure, categorical_default_rate, missingness_vs_default, correlation_figure, feature_selection_tables
-from ml.feature_engineering import clean_raw_dataframe, engineer_features, detect_constant_features
+
+def _df_cache_key(df: pd.DataFrame) -> str:
+    """Return a stable lightweight cache key stored on project dataframes.
+
+    Streamlit normally hashes every cell of a DataFrame when it is passed to
+    ``st.cache_data``. For the 6,000x40 training extract that repeated hashing
+    is unnecessary because project creation already computes a content fingerprint.
+    """
+    key = df.attrs.get("_creditrisk_cache_key")
+    if key:
+        return str(key)
+    return f"fallback:{len(df)}:{len(df.columns)}:{','.join(map(str, df.columns))}"
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: _df_cache_key})
 def cached_understanding(df: pd.DataFrame):
+    from ml.eda import target_distribution, missingness_table
+    from ml.feature_engineering import detect_constant_features
     summary = pd.DataFrame({
         "Feature": df.columns,
         "Raw dtype": df.dtypes.astype(str).values,
@@ -26,39 +36,37 @@ def cached_understanding(df: pd.DataFrame):
         "Missing %": (df.isna().mean() * 100).round(2).values,
     })
     miss = missingness_table(df).reset_index().rename(columns={"index": "Feature"})
-    constants = detect_constant_features(df)
-    td = target_distribution(df)
-    return {"summary": summary, "missing": miss, "constants": constants, "target": td}
+    return {
+        "summary": summary,
+        "missing": miss,
+        "constants": detect_constant_features(df),
+        "target": target_distribution(df),
+    }
 
 
-@st.cache_data(show_spinner=False)
-def cached_eda(df: pd.DataFrame):
+@st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: _df_cache_key})
+def cached_eda_base(df: pd.DataFrame):
+    """Cache only the cleaned/engineered data needed by EDA. Plotly figures are built on demand."""
+    from ml.feature_engineering import clean_raw_dataframe, engineer_features
     clean = clean_raw_dataframe(df, drop_constant=True)
     eng = engineer_features(clean)
-    hist = numeric_histogram(df)
-    box = boxplot_figure(df)
-    missing_default = missingness_vs_default(df)
-    corr_fig, corr = correlation_figure(df)
-    chi, mi = feature_selection_tables(df)
     categorical_choices = [
         c for c in [
             "Client_Education", "Client_Income_Type", "Client_Marital_Status",
             "Client_Gender", "Loan_Contract_Type", "Client_Housing_Type", "Cleint_City_Rating"
-        ] if c in df.columns
+        ] if c in clean.columns
     ]
-    cat_figs = {c: categorical_default_rate(df, c) for c in categorical_choices}
-    new_features = [c for c in eng.columns if c not in clean.columns]
     return {
-        "hist": hist,
-        "box": box,
-        "missing_default": missing_default,
-        "corr_fig": corr_fig,
-        "corr": corr,
-        "chi": chi,
-        "mi": mi,
-        "categorical_choices": categorical_choices,
-        "cat_figs": cat_figs,
         "clean": clean,
         "engineered": eng,
-        "new_features": new_features,
+        "categorical_choices": categorical_choices,
+        "new_features": [c for c in eng.columns if c not in clean.columns],
     }
+
+
+@st.cache_data(show_spinner=False, hash_funcs={pd.DataFrame: _df_cache_key})
+def cached_feature_selection(df: pd.DataFrame):
+    from ml.eda import feature_selection_tables
+    from ml.feature_engineering import clean_raw_dataframe
+    clean = clean_raw_dataframe(df, drop_constant=True)
+    return feature_selection_tables(clean=clean)

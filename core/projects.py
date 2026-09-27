@@ -32,6 +32,7 @@ class ProjectRecord:
     default_rate: float = 0.0
     model_versions: list[str] = field(default_factory=list)
     recommended_version: str | None = None
+    recommended_model_name: str | None = None
     release_note: str = ""
 
     @property
@@ -70,22 +71,52 @@ class ProjectManager:
         self.index_path = self.root / "project_index.json"
         self._lock = RLock()
         self.root.mkdir(parents=True, exist_ok=True)
+        self._index_cache: dict[str, Any] | None = None
+        self._index_mtime_ns: int = -1
+        self._projects_cache: list[ProjectRecord] | None = None
+        self._projects_mtime_ns: int = -1
+        self._model_index_cache: dict[str, list[dict[str, Any]]] = {}
+        self._model_index_mtime_ns: dict[str, int] = {}
         if not self.index_path.exists():
             _atomic_json_write(self.index_path, {"active_project_id": None, "projects": []})
 
-    def _read_index(self) -> dict[str, Any]:
+    def _invalidate_index_cache(self) -> None:
+        self._index_cache = None
+        self._index_mtime_ns = -1
+        self._projects_cache = None
+        self._projects_mtime_ns = -1
+
+    def _read_index(self, force: bool = False) -> dict[str, Any]:
         try:
+            mtime_ns = self.index_path.stat().st_mtime_ns
+            if not force and self._index_cache is not None and mtime_ns == self._index_mtime_ns:
+                return self._index_cache
             raw = json.loads(self.index_path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 raw.setdefault("active_project_id", None)
                 raw.setdefault("projects", [])
+                self._index_cache = raw
+                try:
+                    self._index_mtime_ns = self.index_path.stat().st_mtime_ns
+                except OSError:
+                    self._index_mtime_ns = -1
                 return raw
         except Exception:
             pass
-        return {"active_project_id": None, "projects": []}
+        raw = {"active_project_id": None, "projects": []}
+        self._index_cache = raw
+        self._index_mtime_ns = -1
+        return raw
 
     def _write_index(self, index: dict[str, Any]) -> None:
         _atomic_json_write(self.index_path, index)
+        self._index_cache = dict(index)
+        try:
+            self._index_mtime_ns = self.index_path.stat().st_mtime_ns
+        except OSError:
+            self._index_mtime_ns = -1
+        self._projects_cache = None
+        self._projects_mtime_ns = -1
 
     def _manifest_path(self, project_id: str) -> Path:
         return self.root / project_id / "project.json"
@@ -95,6 +126,12 @@ class ProjectManager:
 
     def list_projects(self) -> list[ProjectRecord]:
         with self._lock:
+            try:
+                mtime_ns = self.index_path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = -1
+            if self._projects_cache is not None and mtime_ns == self._projects_mtime_ns:
+                return list(self._projects_cache)
             index = self._read_index()
             projects: list[ProjectRecord] = []
             for item in index.get("projects", []):
@@ -102,14 +139,22 @@ class ProjectManager:
                     projects.append(ProjectRecord(**item))
                 except TypeError:
                     continue
-            return sorted(projects, key=lambda p: p.updated_at_utc, reverse=True)
+            projects = sorted(projects, key=lambda p: p.updated_at_utc, reverse=True)
+            self._projects_cache = projects
+            self._projects_mtime_ns = mtime_ns
+            return list(projects)
 
     def get_project(self, project_id: str | None) -> ProjectRecord | None:
         if not project_id:
             return None
-        for project in self.list_projects():
-            if project.project_id == project_id:
-                return project
+        with self._lock:
+            index = self._read_index()
+            for item in index.get("projects", []):
+                if item.get("project_id") == project_id:
+                    try:
+                        return ProjectRecord(**item)
+                    except TypeError:
+                        return None
         return None
 
     @property
@@ -188,17 +233,32 @@ class ProjectManager:
         return str(train_path), str(dict_path)
 
     def model_index(self, project_id: str) -> list[dict[str, Any]]:
+        """Read one project's model index with an mtime-aware in-process cache."""
         path = self._models_index_path(project_id)
         if not path.exists():
+            self._model_index_cache[project_id] = []
+            self._model_index_mtime_ns[project_id] = -1
             return []
         try:
+            mtime_ns = path.stat().st_mtime_ns
+            cached = self._model_index_cache.get(project_id)
+            if cached is not None and self._model_index_mtime_ns.get(project_id) == mtime_ns:
+                return cached
             payload = json.loads(path.read_text(encoding="utf-8"))
-            return payload if isinstance(payload, list) else []
+            rows = payload if isinstance(payload, list) else []
+            self._model_index_cache[project_id] = rows
+            self._model_index_mtime_ns[project_id] = mtime_ns
+            return rows
         except Exception:
-            return []
+            return self._model_index_cache.get(project_id, [])
 
     def save_model_index(self, project_id: str, rows: list[dict[str, Any]]) -> None:
         _atomic_json_write(self._models_index_path(project_id), rows)
+        self._model_index_cache[project_id] = list(rows)
+        try:
+            self._model_index_mtime_ns[project_id] = self._models_index_path(project_id).stat().st_mtime_ns
+        except OSError:
+            self._model_index_mtime_ns[project_id] = -1
         project = self.get_project(project_id)
         if project:
             project.model_versions = [str(r.get("version")) for r in rows if r.get("version")]
