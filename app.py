@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from core.logging_utils import emit_log
@@ -31,13 +33,13 @@ def login_screen() -> None:
     navigation is created only after a valid login and rerun.
     """
     inject_login_css()
-    st.markdown("<div style='height:10vh'></div>", unsafe_allow_html=True)
-    _, center, _ = st.columns([1, 1.1, 1])
+    st.markdown("<div style='height:7vh'></div>", unsafe_allow_html=True)
+    _, center, _ = st.columns([1, 1.15, 1])
     with center:
         with st.container(border=True):
             render_brand(large=True)
             st.subheader("Sign in")
-            st.caption("Local demo authentication for the academic application")
+            st.caption("Sign in to your secure project workspace")
             with st.form("login_form"):
                 username = st.text_input("Username")
                 password = st.text_input("Password", type="password")
@@ -51,7 +53,7 @@ def login_screen() -> None:
                     st.rerun()
                 else:
                     st.error("Invalid username or password.")
-            with st.expander("Demo credentials"):
+            with st.expander("Demo access", icon=":material/help_outline:"):
                 st.code("admin / Admin@123\nuser / User@123")
 
 
@@ -68,10 +70,13 @@ def build_authenticated_navigation(role: str):
         st.Page("pages/user_prediction.py", title="Quick Prediction", icon=":material/online_prediction:"),
         st.Page("pages/bulk_prediction.py", title="Bulk Prediction", icon=":material/upload_file:"),
     ]
-    common = [st.Page("pages/about.py", title="About", icon=":material/info:")]
     if role == "admin":
-        return {"Workspace": admin_pages, "Prediction": user_pages, "Information": common}
-    return {"Prediction": user_pages, "Information": common}
+        return {
+            "Workspace": admin_pages,
+            "Prediction": user_pages,
+            "Information": [st.Page("pages/about.py", title="About", icon=":material/info:")],
+        }
+    return {"Prediction": user_pages}
 
 
 # Use dynamic navigation so unauthenticated sessions have a hidden, single-page
@@ -92,16 +97,24 @@ user = current_user()
 # This is deliberately not wrapped in a spinner: registry hydration is lightweight
 # and a full-page spinner made normal navigation feel slower than it was.
 store = get_store()
+st.logo(str(Path(__file__).parent / "assets" / "creditrisk_logo.svg"), size="large")
 if not st.session_state.get("app_log_initialized"):
     emit_log("Authenticated application session initialized", "DEBUG", "app")
     st.session_state.app_log_initialized = True
 
-if st.sidebar.button("Sign out", icon=":material/logout:"):
-    emit_log(f"Sign-out requested | user={user.get('username', '')!r}", "INFO", "auth")
-    logout()
-    st.rerun()
-
-render_sidebar_status(user["role"], user["display_name"], store)
+with st.sidebar:
+    if user["role"] != "admin":
+        st.markdown("<div class='cr-sidebar-section'>Information</div>", unsafe_allow_html=True)
+        with st.expander("About", icon=":material/info:"):
+            st.caption("CreditRisk Studio estimates loan default risk from the application details you provide.")
+            st.caption("Review the estimate and its supporting factors as decision support.")
+    with st.container(key="sidebar-account"):
+        render_sidebar_status(user["role"], user["display_name"], store)
+        st.divider()
+        if st.button("Sign out", icon=":material/logout:", width="stretch"):
+            emit_log(f"Sign-out requested | user={user.get('username', '')!r}", "INFO", "auth")
+            logout()
+            st.rerun()
 
 pages = build_authenticated_navigation(user["role"])
 pg = st.navigation(pages, position="sidebar", expanded=True)

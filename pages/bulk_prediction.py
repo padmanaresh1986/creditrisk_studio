@@ -15,19 +15,14 @@ current_session_user = st.session_state.get("auth_user") or {}
 current_session_username = str(current_session_user.get("username", ""))
 active_project = store.active_project
 project_text = f"Active project: {active_project.name}. " if active_project else ""
-section_header("PREDICTION CENTER", "Bulk Prediction", project_text + "Score a CSV or Excel application file, inspect individual records, and download the scored workbook.")
+section_header("PREDICTION CENTER", "Bulk Prediction", "Score a CSV or Excel application file, inspect individual records, and download the scored workbook.")
 models = available_user_models()
 if not models:
     empty_state("Bulk scoring is not available yet", "No final prediction model has been released for the active project. Complete training and have an administrator set one final model.", "Training Studio → Model Release & User Access")
     st.stop()
 
 selected = models[0]
-with st.container(border=True):
-    st.caption("ADMINISTRATOR-SELECTED FINAL MODEL")
-    st.markdown(f"### {selected.model_name}")
-    st.caption(f"{selected.family} · holdout PR-AUC {selected.final_metrics.get('PR-AUC', float('nan')):.4f} · threshold {selected.threshold:.1%}")
-    st.info("Users do not select a model. Bulk scoring uses the administrator-selected final model for the active project.")
-
+st.caption("Predictions use the model approved for this project.")
 
 uploaded = st.file_uploader("Upload applicant file", type=["csv", "xlsx", "xls"], disabled=st.session_state.busy)
 if uploaded is None:
