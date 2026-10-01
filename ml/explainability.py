@@ -241,8 +241,8 @@ def explain_local(shap_df: pd.DataFrame, dictionary: dict[str, str], top_n: int 
 def risk_band(probability: float) -> tuple[str, float]:
     """Return a stable three-band probability label and percent position."""
     p = float(np.clip(probability, 0.0, 1.0))
-    if p < 0.10:
+    if p < 0.25:
         return "Low", p * 100.0
-    if p < 0.20:
+    if p < 0.50:
         return "Medium", p * 100.0
     return "High", p * 100.0

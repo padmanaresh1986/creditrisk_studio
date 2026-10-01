@@ -24,7 +24,8 @@ if not models:
 selected = models[0]
 st.caption("Predictions use the model approved for this project.")
 
-uploaded = st.file_uploader("Upload applicant file", type=["csv", "xlsx", "xls"], disabled=st.session_state.busy)
+busy = bool(st.session_state.get("busy", False))
+uploaded = st.file_uploader("Upload applicant file", type=["csv", "xlsx", "xls"], disabled=busy)
 if uploaded is None:
     empty_state("Waiting for an applicant file", "Upload a scoring file that follows the raw predictor schema. A target column, when present, is ignored during scoring.", "CSV, XLSX and XLS are supported")
     st.stop()
@@ -64,7 +65,7 @@ c3.metric("Missing required cells", f"{int(raw[required].isna().sum().sum()):,}"
 st.markdown("### Preview")
 st.dataframe(raw.head(12), width="stretch", hide_index=True)
 
-if st.button("Run bulk scoring", type="primary", width="stretch", icon=":material/play_arrow:", disabled=st.session_state.busy):
+if st.button("Run bulk scoring", type="primary", width="stretch", icon=":material/play_arrow:", disabled=busy):
     st.session_state.bulk_logs = []
     st.session_state.busy = True
     emit_log(

@@ -6,7 +6,7 @@ import math
 
 import streamlit as st
 
-from core.logging_utils import emit_exception, emit_log, render_console
+from core.logging_utils import emit_exception, emit_log
 
 from components.ui import empty_state, risk_meter
 from core.model_catalog import available_user_models, load_model_context, prediction_input_profile
@@ -396,8 +396,6 @@ if submitted:
     finally:
         st.session_state.busy = False
 
-render_console("prediction", expanded=False)
-
 result = st.session_state.get("quick_result")
 if result and (
     result.get("owner_username") != current_session_username
@@ -484,12 +482,6 @@ if result and result.get("version") == selected.version:
         if result.get("assumed_fields"):
             st.caption("The remaining model inputs use the training project's standard defaults/imputation context.")
             st.dataframe(pd.DataFrame({"Assumed field": [str(x).replace("_", " ") for x in result["assumed_fields"]]}), width="stretch", hide_index=True)
-
-    with st.expander("Try a different operating threshold", expanded=False):
-        threshold = st.slider("Classification threshold", 0.05, 0.95, float(result["threshold"]), 0.01)
-        pred = int(result["probability"] >= threshold)
-        st.write(f"At **{threshold:.0%}**, the selected model would classify this applicant as **{'Default' if pred else 'Non-default'}**.")
-        st.caption("Changing the threshold changes the classification rule, not the underlying probability estimate.")
 
     with st.expander("Data dictionary context", expanded=False):
         wanted = result.get("supplied_raw_fields", [])

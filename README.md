@@ -8,9 +8,9 @@ The application is intentionally self-contained for an academic/local deployment
 
 ## Runtime logging and troubleshooting
 
-Prediction, bulk-scoring, training, and application lifecycle events are logged at `DEBUG`, `INFO`, `WARNING`, and `ERROR` levels. Workflow pages expose a collapsed terminal-style console for the relevant channel, while the full Python traceback is also printed to the Streamlit server terminal for development troubleshooting. User-facing error messages contain the exception type and message without replacing the diagnostic console.
+Prediction, bulk-scoring, training, and application lifecycle events are logged at `DEBUG`, `INFO`, `WARNING`, and `ERROR` levels. Quick Prediction diagnostics are printed to the Streamlit server terminal; bulk-scoring and training pages retain their collapsed in-app consoles. Full Python tracebacks are printed to the server terminal for development troubleshooting, while user-facing errors contain the exception type and message.
 
-For a quick prediction failure, expand **Prediction console** after the attempt. For a bulk failure, expand **Bulk prediction console**. Long-running training activity remains in **Processing console**.
+For a quick prediction failure, review the Streamlit server terminal. For a bulk failure, expand **Bulk prediction console**. Long-running training activity remains in **Processing console**.
 
 
 ## Session isolation and logout

@@ -32,3 +32,9 @@ def test_store_is_not_initialized_before_authentication():
     auth_gate = source.index('if not is_authenticated():')
     store_init = source.index('store = get_store()')
     assert store_init > auth_gate
+
+
+def test_bulk_prediction_defaults_missing_busy_state_to_idle():
+    source = (ROOT / "pages" / "bulk_prediction.py").read_text(encoding="utf-8")
+    assert 'busy = bool(st.session_state.get("busy", False))' in source
+    assert "disabled=st.session_state.busy" not in source

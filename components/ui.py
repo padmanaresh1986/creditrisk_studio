@@ -18,6 +18,7 @@ def inject_global_css() -> None:
         [data-testid="stSidebar"] .cr-brand-subtitle { color:#AEC5E3; }
         [data-testid="stSidebar"] .cr-brand-mark { background:linear-gradient(145deg,#1678F2,#49A0FF); box-shadow:0 7px 18px rgba(0,0,0,.2); }
         [data-testid="stSidebar"] [data-testid="stSidebarNav"] a { color:#D8E6F8; border-radius:8px; margin:2px 8px; }
+        [data-testid="stSidebar"] [data-testid="stSidebarNav"] [data-testid="stIconMaterial"] { color:#FFFFFF !important; }
         [data-testid="stSidebar"] [data-testid="stSidebarNav"] a[aria-current="page"] { background:#14569B; color:#FFFFFF; }
         [data-testid="stSidebar"] [data-testid="stSidebarNav"] a:hover { background:#123D6D; color:#FFFFFF; }
         [data-testid="stSidebarContent"] { position:relative; display:flex; flex-direction:column; height:100vh; min-height:100vh; overflow-y:auto; }
@@ -170,13 +171,13 @@ def risk_meter(probability: float, base_rate: float, threshold: float) -> None:
     pct = p * 100.0
     threshold_pct = t * 100.0
 
-    # Communication bands are fixed and intentionally limited to three labels.
+    # Match the visible risk zones to the labels shown in prediction results.
     bands = [
-        (0.0, 10.0, "Low", "#2E9F5B"),
-        (10.0, 20.0, "Medium", "#C99B2B"),
-        (20.0, 50.0, "High", "#C84B4B"),
+        (0.0, 25.0, "Low", "#2E9F5B"),
+        (25.0, 50.0, "Medium", "#C99B2B"),
+        (50.0, 100.0, "High", "#C84B4B"),
     ]
-    visual_max = 50.0
+    visual_max = 100.0
 
     def angle_for(value_pct: float) -> float:
         # 180° = left, 0° = right; upper half is the visible speedometer.
@@ -215,6 +216,26 @@ def risk_meter(probability: float, base_rate: float, threshold: float) -> None:
             text=f"<b>{label}</b>",
             showarrow=False,
             font=dict(size=11, color="white"),
+        )
+
+    for tick in (0.0, 50.0, 100.0):
+        tick_angle = angle_for(tick)
+        fig.add_trace(
+            go.Scatter(
+                x=[outer_r * math.cos(tick_angle), 1.05 * math.cos(tick_angle)],
+                y=[outer_r * math.sin(tick_angle), 1.05 * math.sin(tick_angle)],
+                mode="lines",
+                line=dict(color="#102A43", width=2),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        fig.add_annotation(
+            x=1.14 * math.cos(tick_angle),
+            y=1.14 * math.sin(tick_angle),
+            text=f"{int(tick)}%",
+            showarrow=False,
+            font=dict(size=11, color="#102A43"),
         )
 
     # Threshold marker.
@@ -289,8 +310,8 @@ def risk_meter(probability: float, base_rate: float, threshold: float) -> None:
         font=dict(size=11, color="#667085"),
     )
 
-    fig.update_xaxes(visible=False, range=[-1.2, 1.2], fixedrange=True)
-    fig.update_yaxes(visible=False, range=[-0.18, 1.18], fixedrange=True, scaleanchor="x", scaleratio=1)
+    fig.update_xaxes(visible=False, range=[-1.28, 1.28], fixedrange=True)
+    fig.update_yaxes(visible=False, range=[-0.18, 1.28], fixedrange=True, scaleanchor="x", scaleratio=1)
     fig.update_layout(
         height=340,
         margin=dict(l=18, r=18, t=8, b=4),

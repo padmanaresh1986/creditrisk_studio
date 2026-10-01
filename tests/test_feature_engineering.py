@@ -66,9 +66,18 @@ def test_training_matrix_separates_target_and_identifier():
 
 
 def test_risk_band_has_three_stable_probability_bands():
-    band, score = risk_band(0.188)
-    assert band == "Medium"
-    assert 0 <= score <= 100
+    cases = [
+        (0.0, "Low"),
+        (0.249, "Low"),
+        (0.25, "Medium"),
+        (0.499, "Medium"),
+        (0.50, "High"),
+        (1.0, "High"),
+    ]
+    for probability, expected_band in cases:
+        band, score = risk_band(probability)
+        assert band == expected_band
+        assert score == probability * 100
 
 
 def test_application_hour_mixed_excel_types_are_numeric_before_cyclical_encoding():
