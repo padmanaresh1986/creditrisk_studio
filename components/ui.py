@@ -24,7 +24,7 @@ def inject_global_css() -> None:
         [data-testid="stSidebarContent"] { position:relative; display:flex; flex-direction:column; height:100vh; min-height:100vh; overflow-y:auto; }
         [data-testid="stSidebarLogo"], [data-testid="stSidebarLogo"] img { height:52px !important; min-height:52px !important; max-height:none !important; width:auto !important; max-width:220px !important; margin:4px 0 18px !important; }
         [data-testid="stSidebarUserContent"] { position:static; display:flex; flex:1 1 auto; min-height:0; flex-direction:column; margin:0 !important; padding:0 16px 16px; }
-        [data-testid="stSidebarUserContent"] .st-key-sidebar-account { position:absolute; left:16px; right:16px; bottom:16px; margin:0 !important; padding-top:14px; border-top:1px solid rgba(216,230,248,.16); }
+        [data-testid="stSidebarUserContent"] .st-key-sidebar-account { position:static; flex:0 0 auto; margin:auto 0 0 !important; padding-top:14px; border-top:1px solid rgba(216,230,248,.16); }
         [data-testid="stSidebar"] button { border-color:transparent; color:#FFFFFF; background:transparent; justify-content:flex-start; }
         [data-testid="stSidebar"] button:hover { border-color:transparent; background:#123D6D; color:#FFFFFF; }
         [data-testid="stMain"] div[data-testid="stVerticalBlockBorderWrapper"] { background:#FFFFFF; border-color:#DCE7F3; border-radius:16px; box-shadow:0 4px 18px rgba(22,70,125,.045); }
