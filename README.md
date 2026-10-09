@@ -6,6 +6,20 @@ CreditRisk Studio is a Streamlit-only academic automobile-loan default analytics
 
 The application is intentionally self-contained for an academic/local deployment: interactive workflow state is kept in Streamlit session state, while trained projects, source datasets, model artifacts, analysis outputs and run logs are persisted locally under the `projects/` directory. An in-process registry/cache is hydrated from that local project library at startup. There is no FastAPI service, database, Redis queue, MLflow server, or external object store in this build.
 
+## Important – Dataset Used for Modelling
+
+The original Kaggle Automobile Loan Default dataset contains approximately 121,000 records. During project development, running the full modelling workflow across multiple candidate models, cross-validation, and hyperparameter tuning required substantially more compute than was practical for repeated local experimentation.
+
+To keep the project reproducible and efficient, a stratified sample of 6,000 records was derived from the original dataset while preserving the target distribution. This 6,000-record dataset was used for data preprocessing, feature engineering, model training, model comparison, hyperparameter tuning, threshold optimization, and final evaluation presented in this project.
+
+For reproducing the modelling, training, evaluation, and results shown in this project, please use the following dataset:
+
+`data/Loan_Default_Representative_6000.csv`
+
+Please do not use the original 121K-record dataset for reproducing the project results.
+
+The original Kaggle file has been renamed to `data/Orig_kaggle_dataset.csv` to avoid confusion with the representative modelling dataset above.
+
 ## Runtime logging and troubleshooting
 
 Prediction, bulk-scoring, training, and application lifecycle events are logged at `DEBUG`, `INFO`, `WARNING`, and `ERROR` levels. Quick Prediction diagnostics are printed to the Streamlit server terminal; bulk-scoring and training pages retain their collapsed in-app consoles. Full Python tracebacks are printed to the server terminal for development troubleshooting, while user-facing errors contain the exception type and message.
